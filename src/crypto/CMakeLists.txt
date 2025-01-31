@@ -19,6 +19,7 @@ add_library(bitcoin_crypto STATIC EXCLUDE_FROM_ALL
   sha3.cpp
   sha512.cpp
   siphash.cpp
+  tens_pow/tens_hash.cpp
   ../support/cleanse.cpp
 )
 
