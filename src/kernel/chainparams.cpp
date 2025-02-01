@@ -171,7 +171,7 @@ public:
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x88, 0xAD, 0xE4};
 
         //bech32_hrp = "bc";
-        bech32_hrp = "tc";
+        bech32_hrp = "tensc";
 
         vFixedSeeds = std::vector<uint8_t>(std::begin(chainparams_seed_main), std::end(chainparams_seed_main));
 
