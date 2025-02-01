@@ -11,7 +11,12 @@
 
 uint256 CBlockHeader::GetHash() const
 {
-    return (HashWriter{} << *this).GetHash();
+    // Create a copy of the header
+    CBlockHeader header = *this;
+    // Zero out the nonce
+    header.nNonce = 0;
+    // Hash the modified header
+    return (HashWriter{} << header).GetHash();
 }
 
 uint256 CBlockHeader::GetPoWHash() const {

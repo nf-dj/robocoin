@@ -3,6 +3,7 @@
 #include <string.h>
 #include <crypto/chacha20.h>
 #include <crypto/common.h>
+#include <crypto/sha256.h>
 #include <vector>
 #include <span>
 #include <cstring>
@@ -76,23 +77,17 @@ static void generate_all_matrices(PrecomputedMatrices* matrices, uint8_t seed[32
 }
 
 static void generate_all_noise(int8_t *noise_buffer, uint8_t input[32], int total_size) {
-    // Similar changes for noise generation
-    std::vector<std::byte> key_bytes(32);
-    std::memcpy(key_bytes.data(), input, 32);
-    Span<const std::byte> key_span(key_bytes);
+    // Use SHA256 to generate the initial digest
+    CSHA256 sha256;
+    unsigned char digest[CSHA256::OUTPUT_SIZE];
     
-    ChaCha20::Nonce96 nonce{};
-    uint32_t counter = 0;
-
-    ChaCha20 chacha(key_span);
+    sha256.Write(input, 32);
+    sha256.Finalize(digest);
     
-    std::vector<std::byte> output_bytes(total_size);
-    Span<std::byte> output_span(output_bytes);
-    
-    chacha.Seek(nonce, counter);
-    chacha.Keystream(output_span);
-    
-    std::memcpy(noise_buffer, output_bytes.data(), total_size);
+    // Use the digest repeatedly to fill the noise buffer
+    for (int i = 0; i < total_size; i++) {
+        noise_buffer[i] = digest[i % CSHA256::OUTPUT_SIZE];
+    }
 }
 
 HashBuffers* init_hash_buffers() {
@@ -253,7 +248,18 @@ void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices
     matrix_multiply(matrices->compress_mat, buffers->state, output, compress_noise, IN_SIZE, HIDDEN);
 }
 
+#include <logging.h>
+#include <util/strencodings.h>
+
 void tens_hash(uint8_t input[IN_SIZE], uint8_t seed[IN_SIZE], uint8_t output[IN_SIZE]) {
+    std::string input_hex, seed_hex;
+    for(int i = 0; i < IN_SIZE; i++) {
+        input_hex += strprintf("%02x", input[IN_SIZE-1-i]);
+        seed_hex += strprintf("%02x", seed[IN_SIZE-1-i]);
+    }
+    LogPrintf("TENS_HASH Input: %s\n", input_hex);
+    LogPrintf("TENS_HASH Seed: %s\n", seed_hex);
+
     PrecomputedMatrices* matrices = precompute_matrices(seed);
     HashBuffers* buffers = init_hash_buffers();
     
@@ -261,6 +267,12 @@ void tens_hash(uint8_t input[IN_SIZE], uint8_t seed[IN_SIZE], uint8_t output[IN_
 
     tens_hash_precomputed(input, matrices, buffers, output);
     
+    std::string output_hex;
+    for(int i = 0; i < IN_SIZE; i++) {
+        output_hex += strprintf("%02x", output[i]);
+    }
+    LogPrintf("TENS_HASH Output: %s\n", output_hex);
+
     free_matrices(matrices);
     free_hash_buffers(buffers);
 }

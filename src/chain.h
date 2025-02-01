@@ -246,6 +246,14 @@ public:
         return *phashBlock;
     }
 
+    uint256 GetPoWHash() const
+    {
+        // Get the block header hash from phashBlock
+        CBlockHeader blockHeader = this->GetBlockHeader();
+        // Call the CBlockHeader implementation of GetPoWHash
+        return blockHeader.GetPoWHash();
+    }
+
     /**
      * Check whether this block and all previous blocks back to the genesis block or an assumeutxo snapshot block have
      * reached VALID_TRANSACTIONS and had transactions downloaded (and stored to disk) at some point.

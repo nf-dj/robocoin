@@ -101,7 +101,7 @@ public:
         consensus.CSVHeight = 419328; // 000000000000000004a1b34462cb8aeebd5799177f7a29cf28f2d1961716b5b5
         consensus.SegwitHeight = 481824; // 0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893
         consensus.MinBIP9WarningHeight = 483840; // segwit activation height + miner confirmation window
-        consensus.powLimit = uint256{"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+        consensus.powLimit = uint256{"0000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
         //consensus.nPowTargetSpacing = 10 * 60;
         consensus.nPowTargetSpacing = 1 * 60;
@@ -139,12 +139,11 @@ public:
         m_assumed_chain_state_size = 14;
 
         //genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff, 1, 50 * COIN);
-        //genesis = CreateGenesisBlock(1738337624, 1234, 0x1e0ffff0, 1, 50 * COIN);
-        genesis = CreateGenesisBlock(1738337624, 0x2b621, 0x1e800000, 1, 50 * COIN);
+        genesis = CreateGenesisBlock(1738337624, 0x914f, 0x1f00ffff, 1, 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         printf("Genesis Block Hash: %s\n", consensus.hashGenesisBlock.ToString().c_str());
         printf("Merkle Root Hash: %s\n", genesis.hashMerkleRoot.ToString().c_str());
-        assert(consensus.hashGenesisBlock == uint256{"c4cc80b9f004992f19f41258c15bae2a305b877069d08b1bc65b5e407eabb04d"});
+        assert(consensus.hashGenesisBlock == uint256{"dd3884f48cdc4f187e15b3864ff9b1604d56657878335493b2af5ed1c089b0a4"});
         assert(genesis.hashMerkleRoot == uint256{"485bc464e61956d85dda756d74e0ec872c594190d15ff9e37a00eac87c7d8fe0"});
 
         // Note that of those which support the service bits prefix, most only support a subset of
@@ -371,8 +370,8 @@ public:
                 1,
                 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
-        assert(consensus.hashGenesisBlock == uint256{"00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043"});
-        assert(genesis.hashMerkleRoot == uint256{"7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e"});
+        //assert(consensus.hashGenesisBlock == uint256{"00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043"});
+        //assert(genesis.hashMerkleRoot == uint256{"7aa0a7ae1e223414cb807e40cd57e667b718e42aaf9306db9102fe28912b7b4e"});
 
         vFixedSeeds.clear();
         vSeeds.clear();

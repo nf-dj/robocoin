@@ -31,16 +31,17 @@ extern void tens_hash_precomputed(uint8_t input[IN_SIZE],
                                   HashBuffers* buffers,
                                   uint8_t output[IN_SIZE]);
 
-// Utility functions
+// Converts hex string (in big endian) to bytes (in little endian)
 void hex_to_bytes(const char *hex, uint8_t *bytes, size_t len) {
     for (size_t i = 0; i < len; i++) {
-        sscanf(hex + 2 * i, "%2hhx", &bytes[i]);
+        sscanf(hex + 2 * (len - 1 - i), "%2hhx", &bytes[i]);
     }
 }
 
+// Prints bytes (in little endian) as hex string (in big endian)
 void print_hex(uint8_t *bytes, size_t len) {
     for (size_t i = 0; i < len; i++) {
-        printf("%02x", bytes[i]);
+        printf("%02x", bytes[len - 1 - i]);
     }
     printf("\n");
 }
@@ -48,7 +49,8 @@ void print_hex(uint8_t *bytes, size_t len) {
 // Count the actual number of leading zero bits in the hash
 int count_leading_zero_bits(uint8_t *hash) {
     int count = 0;
-    for (int i = 0; i < IN_SIZE; i++) {
+    // Start from end (most significant byte) and work backwards
+    for (int i = IN_SIZE - 1; i >= 0; i--) {
         uint8_t byte = hash[i];
         if (byte == 0) {
             count += 8;
@@ -59,7 +61,7 @@ int count_leading_zero_bits(uint8_t *hash) {
                     return count;
                 count++;
             }
-            break; // Unreachable in practice
+            break;
         }
     }
     return count;
@@ -77,7 +79,7 @@ void set_nonce_from_counter(uint8_t *nonce, uint64_t counter) {
     memset(nonce, 0, IN_SIZE);
     // Write the counter in big-endian order to the last 8 bytes.
     for (int i = 0; i < 8; i++) {
-        nonce[IN_SIZE - 8 + i] = (counter >> (8 * (7 - i))) & 0xFF;
+        nonce[i] = (counter >> (8 * i)) & 0xFF;
     }
 }
 
