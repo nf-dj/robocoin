@@ -162,7 +162,8 @@ public:
         vSeeds.emplace_back("dnsseed.emzy.de."); // Stephan Oeste
         vSeeds.emplace_back("seed.bitcoin.wiz.biz."); // Jason Maurice
         vSeeds.emplace_back("seed.mainnet.achownodes.xyz."); // Ava Chow, only supports x1, x5, x9, x49, x809, x849, xd, x400, x404, x408, x448, xc08, xc48, x40c*/
-        vSeeds.emplace_back("seed.tenscoin.org");
+        vSeeds.emplace_back("65.109.105.241");
+        vSeeds.emplace_back("23.88.7.29");
 
         //base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,0);
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,65);
