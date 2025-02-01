@@ -7,6 +7,9 @@
 #include <vector>
 #include <span>
 #include <cstring>
+#include <logging.h>
+#include <util/strencodings.h>
+
 
 static uint8_t mod256(int32_t x) {
     return ((uint8_t)x) & 0xFF;
@@ -248,31 +251,58 @@ void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices
     matrix_multiply(matrices->compress_mat, buffers->state, output, compress_noise, IN_SIZE, HIDDEN);
 }
 
-#include <logging.h>
-#include <util/strencodings.h>
-
 void tens_hash(uint8_t input[IN_SIZE], uint8_t seed[IN_SIZE], uint8_t output[IN_SIZE]) {
     std::string input_hex, seed_hex;
-    for(int i = 0; i < IN_SIZE; i++) {
-        input_hex += strprintf("%02x", input[IN_SIZE-1-i]);
-        seed_hex += strprintf("%02x", seed[IN_SIZE-1-i]);
+    for (int i = 0; i < IN_SIZE; i++) {
+        input_hex += strprintf("%02x", input[IN_SIZE - 1 - i]);
+        seed_hex += strprintf("%02x", seed[IN_SIZE - 1 - i]);
     }
-    LogPrintf("TENS_HASH Input: %s\n", input_hex);
-    LogPrintf("TENS_HASH Seed: %s\n", seed_hex);
+    //LogPrintf("TENS_HASH Input: %s\n", input_hex);
+    //LogPrintf("TENS_HASH Seed: %s\n", seed_hex);
 
-    PrecomputedMatrices* matrices = precompute_matrices(seed);
-    HashBuffers* buffers = init_hash_buffers();
-    
-    if (!matrices || !buffers) return;
+    // Static cache variables for the previous seed, matrices, and buffers.
+    static bool cacheInitialized = false;
+    static uint8_t cachedSeed[IN_SIZE];
+    static PrecomputedMatrices* cachedMatrices = nullptr;
+    static HashBuffers* cachedBuffers = nullptr;
 
-    tens_hash_precomputed(input, matrices, buffers, output);
-    
+    bool seedMatches = false;
+    if (cacheInitialized) {
+        seedMatches = (memcmp(cachedSeed, seed, IN_SIZE) == 0);
+    }
+
+    // If the cache is uninitialized or the seed has changed, allocate new ones.
+    if (!cacheInitialized || !seedMatches) {
+    	LogPrintf("TENS_HASH: initializing buffers...\n");
+        // Free previously cached matrices and buffers (if any)
+        if (cachedMatrices) {
+            free_matrices(cachedMatrices);
+            cachedMatrices = nullptr;
+        }
+        if (cachedBuffers) {
+            free_hash_buffers(cachedBuffers);
+            cachedBuffers = nullptr;
+        }
+        // Update the cached seed.
+        memcpy(cachedSeed, seed, IN_SIZE);
+        cacheInitialized = true;
+
+        cachedMatrices = precompute_matrices(seed);
+        cachedBuffers = init_hash_buffers();
+    }
+
+    // If either allocation failed, we must return.
+    if (!cachedMatrices || !cachedBuffers) {
+        //LogPrintf("TENS_HASH failed: allocation error\n");
+        return;
+    }
+
+    // Compute the hash using the cached matrices and buffers.
+    tens_hash_precomputed(input, cachedMatrices, cachedBuffers, output);
+
     std::string output_hex;
-    for(int i = 0; i < IN_SIZE; i++) {
+    for (int i = 0; i < IN_SIZE; i++) {
         output_hex += strprintf("%02x", output[i]);
     }
-    LogPrintf("TENS_HASH Output: %s\n", output_hex);
-
-    free_matrices(matrices);
-    free_hash_buffers(buffers);
+    //LogPrintf("TENS_HASH Output: %s\n", output_hex);
 }
