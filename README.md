@@ -45,11 +45,13 @@ This design allows mining hardware to potentially switch between cryptocurrency 
 - Computer vision
 
 ### 2. Cryptographic Security
-Security is based on the Learning with Errors (LWE) problem, a foundation of post-quantum cryptography:
+Security is based on the Learning with Errors (LWE) problem [[1]](https://dl.acm.org/doi/10.1145/1060590.1060603), a foundation of post-quantum cryptography:
 - Nonce is cryptographically bound to error vectors
-- High-dimensional transformations resist shortcuts
-- Multiple rounds provide nonlinearity
+- High-dimensional transformations
+- Based on hardness of lattice problems
 - Memory-hard by design
+
+[1] Regev, O. "On Lattices, Learning with Errors, Random Linear Codes, and Cryptography." Journal of the ACM 56, no. 6 (2009)
 
 ### 3. Sustainable Mining
 TensCoin aims to promote sustainable cryptocurrency mining by:
@@ -90,4 +92,4 @@ TensCoin is released under the MIT license. See COPYING for more information.
 
 ---
 
-For the original Bitcoin Core README, see [README_BITCOIN.md](README_BITCOIN.md).
+For the original Bitcoin Core README, see [README_BITCOIN.md](README_BITCOIN.md)
