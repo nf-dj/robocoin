@@ -162,25 +162,25 @@ bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Par
 {
     auto bnTarget{DeriveTarget(nBits, params.powLimit)};
     if (!bnTarget) {
-        LogPrintf("CheckProofOfWork failed: Invalid target derived from nBits=%08x\n", nBits);
-        LogPrintf("  powLimit=%s\n", params.powLimit.ToString());
+        //LogPrintf("CheckProofOfWork failed: Invalid target derived from nBits=%08x\n", nBits);
+        //LogPrintf("  powLimit=%s\n", params.powLimit.ToString());
         return false;
     }
 
     // Add detailed logging
     arith_uint256 bnHash = UintToArith256(hash);
-    LogPrintf("CheckProofOfWork details:\n");
+    /*LogPrintf("CheckProofOfWork details:\n");
     LogPrintf("  nBits: %08x\n", nBits);
     LogPrintf("  Target: %s\n", bnTarget->ToString());
     LogPrintf("  Hash:   %s\n", hash.ToString());
-    LogPrintf("  powLimit: %s\n", params.powLimit.ToString());
+    LogPrintf("  powLimit: %s\n", params.powLimit.ToString());*/
 
     // Check proof of work matches claimed amount
     if (bnHash > *bnTarget) {
-        LogPrintf("  Failed: Hash exceeds target!\n");
+        //LogPrintf("  Failed: Hash exceeds target!\n");
         return false;
     }
 
-    LogPrintf("  Success: Valid proof of work\n");
+    //LogPrintf("  Success: Valid proof of work\n");
     return true;
 }
