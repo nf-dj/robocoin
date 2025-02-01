@@ -1,13 +1,13 @@
 # TensCoin: Bitcoin with AI-friendly Proof of Work
 
-TensCoin is a Bitcoin fork that reimagines proof-of-work for the AI era. By implementing a novel tensor-based mining algorithm inspired by the Learning with Errors (LWE) problem, TensCoin creates the first cryptocurrency that can share hardware efficiently between mining and AI workloads.
+TensCoin is a Bitcoin fork exploring a new approach to proof-of-work designed for the AI era. It implements a tensor-based mining algorithm inspired by the Learning with Errors (LWE) problem, aiming to enable efficient hardware sharing between mining and AI workloads.
 
 ## Why TensCoin?
 
-Traditional Bitcoin mining using SHA256 has led to specialized ASICs that serve no purpose beyond mining. TensCoin takes a different approach:
-- Mining hardware can be repurposed for AI/ML workloads
-- Cryptographic security is based on the well-studied LWE problem
-- Core operations use the same primitives as neural networks
+Traditional Bitcoin mining using SHA256 has led to specialized ASICs that serve no purpose beyond mining. TensCoin experiments with a different approach:
+- Mining hardware that can be repurposed for AI/ML workloads
+- Cryptographic security based on the well-studied LWE problem
+- Core operations using the same primitives as neural networks
 
 ## How it Works
 
@@ -32,13 +32,13 @@ TensCoin replaces Bitcoin's SHA256d with a tensor-based proof-of-work that uses 
 ## Benefits
 
 ### 1. AI Hardware Compatibility
-TensCoin's mining algorithm maps directly to AI accelerator primitives:
+TensCoin's mining algorithm uses operations common in AI accelerator hardware:
 - Matrix multiplication units (TPUs, NPUs)
 - Low-precision (8-bit) arithmetic
 - Dense linear algebra operations
 - High memory bandwidth utilization
 
-This means mining hardware can efficiently switch between cryptocurrency mining and AI/ML workloads like:
+This design allows mining hardware to potentially switch between cryptocurrency mining and AI/ML workloads like:
 - Neural network training
 - Inference serving
 - Large language models
@@ -52,7 +52,7 @@ Security is based on the Learning with Errors (LWE) problem, a foundation of pos
 - Memory-hard by design
 
 ### 3. Sustainable Mining
-TensCoin promotes sustainable cryptocurrency mining by:
+TensCoin aims to promote sustainable cryptocurrency mining by:
 - Enabling hardware reuse between mining and AI
 - Reducing e-waste from specialized ASICs
 - Creating dual-use infrastructure
@@ -68,7 +68,7 @@ See src/crypto/tens_pow/ for the core implementation, which includes:
 
 ## Roadmap
 
-Planned improvements include:
+Areas for research and improvement include:
 - Hardware-specific optimizations for different AI accelerators
 - Formal security analysis and parameter optimization
 - Dynamic difficulty adjustment tuning
@@ -83,8 +83,6 @@ We welcome contributions in:
 - Parameter tuning and testing
 - Documentation and examples
 - Mining software integration
-
-Please see CONTRIBUTING.md for more details.
 
 ## License
 
