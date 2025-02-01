@@ -60,6 +60,7 @@ static void matrix_multiply(uint8_t **A, uint8_t *in, uint8_t *out, int8_t *e, i
 // -----------------------------------------------------------------------------
 // generate_matrices(): fills the provided matrices using ChaCha20.
 // Uses a fixed, all-zero nonce.
+// (This function is not changed by our update.)
 // -----------------------------------------------------------------------------
 static void generate_matrices(uint8_t **expand_mat,
                               uint8_t **middle_mats[ROUNDS],
@@ -96,8 +97,13 @@ void tens_hash_precomputed(uint8_t input[IN_SIZE],
                            HashBuffers* buffers,
                            uint8_t output[IN_SIZE]) {
     int total_noise = HIDDEN + (ROUNDS * HIDDEN) + IN_SIZE;
-    unsigned char nonce[crypto_stream_chacha20_NONCEBYTES] = {0}; // fixed nonce
-    crypto_stream_chacha20((unsigned char*)buffers->noise, total_noise, nonce, input);
+    // Instead of using ChaCha20, compute SHA-256 of the input.
+    // This produces a 32-byte digest, which we then "wrap" (repeat) over the entire noise buffer.
+    unsigned char digest[crypto_hash_sha256_BYTES];
+    crypto_hash_sha256(digest, input, IN_SIZE);
+    for (int i = 0; i < total_noise; i++) {
+        buffers->noise[i] = digest[i % crypto_hash_sha256_BYTES];
+    }
 
     int8_t *expand_noise = buffers->noise;
     int8_t *middle_noise = buffers->noise + HIDDEN;

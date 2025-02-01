@@ -139,11 +139,12 @@ public:
         m_assumed_chain_state_size = 14;
 
         //genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff, 1, 50 * COIN);
-        genesis = CreateGenesisBlock(1738337624, 2083236893, 0x1d00ffff, 1, 50 * COIN);
+        //genesis = CreateGenesisBlock(1738337624, 1234, 0x1e0ffff0, 1, 50 * COIN);
+        genesis = CreateGenesisBlock(1738337624, 0x2b621, 0x1e800000, 1, 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         printf("Genesis Block Hash: %s\n", consensus.hashGenesisBlock.ToString().c_str());
         printf("Merkle Root Hash: %s\n", genesis.hashMerkleRoot.ToString().c_str());
-        assert(consensus.hashGenesisBlock == uint256{"aba7a2631bdeba4c3f51c2903243a3345d104fdb012e962c4dd18e5ab622013c"});
+        assert(consensus.hashGenesisBlock == uint256{"c4cc80b9f004992f19f41258c15bae2a305b877069d08b1bc65b5e407eabb04d"});
         assert(genesis.hashMerkleRoot == uint256{"485bc464e61956d85dda756d74e0ec872c594190d15ff9e37a00eac87c7d8fe0"});
 
         // Note that of those which support the service bits prefix, most only support a subset of

@@ -59,7 +59,7 @@ int count_leading_zero_bits(uint8_t *hash) {
                     return count;
                 count++;
             }
-            break; // This line is technically unreachable
+            break; // Unreachable in practice
         }
     }
     return count;
@@ -70,9 +70,15 @@ int check_difficulty(uint8_t *hash, int difficulty) {
     return count_leading_zero_bits(hash) >= difficulty;
 }
 
-// Generate random nonce (32 bytes)
-void generate_nonce(uint8_t *nonce) {
-    randombytes_buf(nonce, IN_SIZE);
+// Instead of generating a random nonce, we now create a nonce from a sequential counter.
+// This function sets the **last** 8 bytes of the nonce to the big-endian representation
+// of the counter, leaving the first 24 bytes as zeros.
+void set_nonce_from_counter(uint8_t *nonce, uint64_t counter) {
+    memset(nonce, 0, IN_SIZE);
+    // Write the counter in big-endian order to the last 8 bytes.
+    for (int i = 0; i < 8; i++) {
+        nonce[IN_SIZE - 8 + i] = (counter >> (8 * (7 - i))) & 0xFF;
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -119,7 +125,7 @@ int main(int argc, char *argv[]) {
     uint64_t last_attempts = 0;
     int best_zero_bits = 0;
     
-    printf("Mining with precomputed matrices:\n");
+    printf("Mining with precomputed matrices (sequential nonce, big-endian at end):\n");
     printf("  Seed: ");
     print_hex(seed, 32);
     printf("  Difficulty: %d leading 0 bits\n", difficulty);
@@ -127,10 +133,10 @@ int main(int argc, char *argv[]) {
     printf("  Time    Hash Rate      TOPS         Total Hashes    Best Bits\n");
     printf("  ----    ---------    --------      ------------    ----------\n");
 
-    // Mining loop
+    // Mining loop: try sequential nonces: 0, 1, 2, ...
     while (1) {
-        // Generate new nonce
-        generate_nonce(nonce);
+        // Set nonce from the sequential counter (big-endian in the last 8 bytes)
+        set_nonce_from_counter(nonce, attempts);
         attempts++;
 
         // Calculate hash using precomputed matrices and pre-allocated buffers
