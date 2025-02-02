@@ -141,7 +141,7 @@ public:
         m_assumed_chain_state_size = 14;
 
         //genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff, 1, 50 * COIN);
-        genesis = CreateGenesisBlock(1738337624, 0x914f, 0x1f00ffff, 1, 50 * COIN);
+        genesis = CreateGenesisBlock(1738337624, 0xda26, 0x1f00ffff, 1, 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         printf("Genesis Block Hash: %s\n", consensus.hashGenesisBlock.ToString().c_str());
         printf("Merkle Root Hash: %s\n", genesis.hashMerkleRoot.ToString().c_str());

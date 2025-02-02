@@ -9,7 +9,7 @@
 // Definitions
 // -----------------------------------------------------------------------------
 #define IN_SIZE 32
-#define HIDDEN 1024
+#define HIDDEN 256
 #define ROUNDS 64
 
 // Add implementation type enum
