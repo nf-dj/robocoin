@@ -9,7 +9,7 @@
 // Definitions
 // -----------------------------------------------------------------------------
 #define IN_SIZE 32
-#define HIDDEN 512
+#define HIDDEN 1024
 #define ROUNDS 64
 
 // Add implementation type enum
@@ -62,11 +62,14 @@ static void matrix_multiply_int8(int8_t **A, int8_t *in, int8_t *out, int8_t *e,
         //int32_t sum = 0;
         int8_t sum = 0;
         for (int j = 0; j < cols; j++) {
-            sum += (int32_t)A[i][j] * in[j];
+            sum += A[i][j] * in[j];
         }
         sum += e[i];
-        out[i] = (int8_t)sum;
+        out[i] = sum;
     }
+    //for (int i = 0; i < rows; i++)
+    //    printf("%02x", (uint8_t)out[i]);
+    //printf(" int8\n");
 }
 
 static void matrix_multiply_fp32(int8_t **A, int8_t *in, int8_t *out, int8_t *e, int rows, int cols) {
@@ -79,6 +82,9 @@ static void matrix_multiply_fp32(int8_t **A, int8_t *in, int8_t *out, int8_t *e,
         sum += (float)e[i];
         out[i] = (int8_t)sum;
     }
+    //for (int i = 0; i < rows; i++)
+    //    printf("%02x", (uint8_t)out[i]);
+    //printf(" fp32\n");
 }
 
 // Updated matrix multiply dispatcher
