@@ -18,13 +18,13 @@ TensCoin replaces Bitcoin's SHA256d with a tensor-based proof-of-work that uses 
 2. **Error Vector Derivation:** The nonce is processed using SHA256 to derive error vectors.
 3. **Proof-of-Work Function:**  
    ```
-   input (32 bytes) -> expand (1024-d) -> 64 rounds -> compress (32 bytes)
+   input (32 bytes) -> expand (256-d) -> 64 rounds -> compress (32 bytes)
    each round: state = (matrix × state + error) mod 256
    ```
 4. **Validation:** Check the final output for the required number of leading zeros.
 
 ### Key Parameters
-- **Hidden Dimension:** 1024  
+- **Hidden Dimension:** 256
 - **Matrix Precision:** 8-bit integers  
 - **Arithmetic:** Modulo 256  
 - **Rounds:** 64  
