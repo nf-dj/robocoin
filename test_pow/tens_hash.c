@@ -13,7 +13,7 @@
 // Definitions
 // -----------------------------------------------------------------------------
 #define IN_SIZE 32
-#define HIDDEN 1024
+#define HIDDEN 512
 #define ROUNDS 64
 
 // -----------------------------------------------------------------------------
@@ -53,7 +53,18 @@ static void matrix_multiply(uint8_t **A, uint8_t *in, uint8_t *out, int8_t *e, i
             sum += (int32_t)A[i][j] * in[j];
         }
         sum += e[i];
-        out[i] = ((uint8_t)sum) & 0xFF;
+        out[i] = (uint8_t)sum;
+    }
+}
+
+static void matrix_multiply_fp32(uint8_t **A, uint8_t *in, uint8_t *out, int8_t *e, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        float sum = 0;
+        for (int j = 0; j < cols; j++) {
+            sum += (float)A[i][j] * (float)in[j];
+        }
+        sum += (float)e[i];
+        out[i] = (uint8_t)sum;
     }
 }
 
@@ -111,10 +122,12 @@ void tens_hash_precomputed(uint8_t input[IN_SIZE],
 
     // Expansion step
     matrix_multiply(matrices->expand_mat, input, buffers->state, expand_noise, HIDDEN, IN_SIZE);
+    //matrix_multiply_fp32(matrices->expand_mat, input, buffers->state, expand_noise, HIDDEN, IN_SIZE);
 
     // Middle rounds: use pre-allocated state buffers and swap after each round.
     for (uint32_t round = 0; round < ROUNDS; round++) {
         matrix_multiply(matrices->middle_mats[round], buffers->state, buffers->next_state, middle_noise + (round * HIDDEN), HIDDEN, HIDDEN);
+        //matrix_multiply_fp32(matrices->middle_mats[round], buffers->state, buffers->next_state, middle_noise + (round * HIDDEN), HIDDEN, HIDDEN);
         uint8_t *temp = buffers->state;
         buffers->state = buffers->next_state;
         buffers->next_state = temp;
@@ -122,6 +135,7 @@ void tens_hash_precomputed(uint8_t input[IN_SIZE],
 
     // Compression step
     matrix_multiply(matrices->compress_mat, buffers->state, output, compress_noise, IN_SIZE, HIDDEN);
+    //matrix_multiply_fp32(matrices->compress_mat, buffers->state, output, compress_noise, IN_SIZE, HIDDEN);
 }
 
 // -----------------------------------------------------------------------------
