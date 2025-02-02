@@ -56,19 +56,20 @@ static void generate_matrices(uint8_t **expand_mat,
 // -----------------------------------------------------------------------------
 // Matrix multiplication implementations
 // -----------------------------------------------------------------------------
-static void matrix_multiply_int8(uint8_t **A, uint8_t *in, uint8_t *out, int8_t *e, int rows, int cols) {
+static void matrix_multiply_int8(int8_t **A, int8_t *in, int8_t *out, int8_t *e, int rows, int cols) {
 	//printf("mm_int8\n");
     for (int i = 0; i < rows; i++) {
-        int32_t sum = 0;
+        //int32_t sum = 0;
+        int8_t sum = 0;
         for (int j = 0; j < cols; j++) {
             sum += (int32_t)A[i][j] * in[j];
         }
         sum += e[i];
-        out[i] = (uint8_t)sum;
+        out[i] = (int8_t)sum;
     }
 }
 
-static void matrix_multiply_fp32(uint8_t **A, uint8_t *in, uint8_t *out, int8_t *e, int rows, int cols) {
+static void matrix_multiply_fp32(int8_t **A, int8_t *in, int8_t *out, int8_t *e, int rows, int cols) {
 	//printf("mm_fp32\n");
     for (int i = 0; i < rows; i++) {
         float sum = 0;
@@ -76,7 +77,7 @@ static void matrix_multiply_fp32(uint8_t **A, uint8_t *in, uint8_t *out, int8_t 
             sum += (float)A[i][j] * (float)in[j];
         }
         sum += (float)e[i];
-        out[i] = (uint8_t)sum;
+        out[i] = (int8_t)sum;
     }
 }
 
