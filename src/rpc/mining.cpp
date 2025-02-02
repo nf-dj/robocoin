@@ -136,10 +136,21 @@ static bool GenerateBlock(ChainstateManager& chainman, CBlock&& block, uint64_t&
     block_out.reset();
     block.hashMerkleRoot = BlockMerkleRoot(block);
 
-    while (max_tries > 0 && block.nNonce < std::numeric_limits<uint32_t>::max() && !CheckProofOfWork(block.GetPoWHash(), block.nBits, chainman.GetConsensus()) && !chainman.m_interrupt) {
+    // Initialize TENS hashing context with seed from block header
+    uint256 seed = block.GetHash();
+    TensHashContext* ctx = tens_hash_init(seed.begin());
+    if (!ctx) {
+        return false;
+    }
+
+    while (max_tries > 0 && block.nNonce < std::numeric_limits<uint32_t>::max() && 
+           !CheckProofOfWork(block.GetPoWHashPrecomputed(ctx), block.nBits, chainman.GetConsensus()) && 
+           !chainman.m_interrupt) {
         ++block.nNonce;
         --max_tries;
     }
+
+    tens_hash_free(ctx);
     if (max_tries == 0 || chainman.m_interrupt) {
         return false;
     }

@@ -19,9 +19,17 @@ uint256 CBlockHeader::GetHash() const
     return (HashWriter{} << header).GetHash();
 }
 
+uint256 CBlockHeader::GetPoWHashPrecomputed(TensHashContext* ctx) const {
+    uint256 thash;
+    uint8_t nonce_bytes[32] = {0};
+    memcpy(nonce_bytes, &nNonce, sizeof(nNonce));
+    tens_hash_precomputed(nonce_bytes, ctx, thash.begin());
+    return thash;
+}
+
 uint256 CBlockHeader::GetPoWHash() const {
     uint256 thash;
-    uint256 seed=GetHash();
+    uint256 seed = GetHash();
     uint8_t nonce_bytes[32] = {0};
     memcpy(nonce_bytes, &nNonce, sizeof(nNonce));
     tens_hash(nonce_bytes, seed.begin(), thash.begin());

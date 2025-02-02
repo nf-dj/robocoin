@@ -10,7 +10,6 @@
 #include <logging.h>
 #include <util/strencodings.h>
 
-
 static uint8_t mod256(int32_t x) {
     return ((uint8_t)x) & 0xFF;
 }
@@ -26,283 +25,228 @@ static void matrix_multiply(uint8_t **A, uint8_t *in, uint8_t *out, int8_t *e, i
     }
 }
 
-static void generate_all_matrices(PrecomputedMatrices* matrices, uint8_t seed[32]) {
-   size_t total_size = (HIDDEN * IN_SIZE) + (ROUNDS * HIDDEN * HIDDEN) + (IN_SIZE * HIDDEN);
-   uint8_t* all_data = (uint8_t*)malloc(total_size);
-   if (!all_data) return;
+static void generate_all_matrices(TensHashContext* ctx, uint8_t seed[32]) {
+    size_t total_size = (TENS_HIDDEN * TENS_IN_SIZE) + (TENS_ROUNDS * TENS_HIDDEN * TENS_HIDDEN) + 
+                       (TENS_IN_SIZE * TENS_HIDDEN);
+    uint8_t* all_data = (uint8_t*)malloc(total_size);
+    if (!all_data) return;
 
-   // Convert seed to ChaCha20's expected format 
-   std::vector<std::byte> key_bytes(32);
-   std::memcpy(key_bytes.data(), seed, 32);
-   Span<const std::byte> key_span(key_bytes);
-   
-   // Create nonce
-   ChaCha20::Nonce96 nonce{};  // Zero nonce
-   uint32_t counter = 0;
+    std::vector<std::byte> key_bytes(32);
+    std::memcpy(key_bytes.data(), seed, 32);
+    Span<const std::byte> key_span(key_bytes);
+    
+    ChaCha20::Nonce96 nonce{};
+    uint32_t counter = 0;
+    ChaCha20 chacha(key_span);
+    
+    std::vector<std::byte> output_bytes(total_size); 
+    Span<std::byte> output_span(output_bytes);
+    chacha.Seek(nonce, counter);
+    chacha.Keystream(output_span);
+    std::memcpy(all_data, output_bytes.data(), total_size);
 
-   // Initialize ChaCha20 with key
-   ChaCha20 chacha(key_span);
-   
-   // Convert output buffer to expected format
-   std::vector<std::byte> output_bytes(total_size); 
-   Span<std::byte> output_span(output_bytes);
-   
-   // Generate keystream
-   chacha.Seek(nonce, counter);
-   chacha.Keystream(output_span);
-
-   // Copy generated data to all_data
-   std::memcpy(all_data, output_bytes.data(), total_size);
-
-   uint8_t *curr_pos = all_data;
-   
-   // Copy into expand_mat
-   for (int i = 0; i < HIDDEN; i++) {
-       memcpy(matrices->expand_mat[i], curr_pos, IN_SIZE);
-       curr_pos += IN_SIZE;
-   }
-   
-   // Copy into middle_mats 
-   for (int r = 0; r < ROUNDS; r++) {
-       for (int i = 0; i < HIDDEN; i++) {
-           memcpy(matrices->middle_mats[r][i], curr_pos, HIDDEN);
-           curr_pos += HIDDEN;
-       }
-   }
-   
-   // Copy into compress_mat
-   for (int i = 0; i < IN_SIZE; i++) {
-       memcpy(matrices->compress_mat[i], curr_pos, HIDDEN);
-       curr_pos += HIDDEN;
-   }
-   
-   free(all_data);
+    uint8_t *curr_pos = all_data;
+    
+    for (int i = 0; i < TENS_HIDDEN; i++) {
+        memcpy(ctx->expand_mat[i], curr_pos, TENS_IN_SIZE);
+        curr_pos += TENS_IN_SIZE;
+    }
+    
+    for (int r = 0; r < TENS_ROUNDS; r++) {
+        for (int i = 0; i < TENS_HIDDEN; i++) {
+            memcpy(ctx->middle_mats[r][i], curr_pos, TENS_HIDDEN);
+            curr_pos += TENS_HIDDEN;
+        }
+    }
+    
+    for (int i = 0; i < TENS_IN_SIZE; i++) {
+        memcpy(ctx->compress_mat[i], curr_pos, TENS_HIDDEN);
+        curr_pos += TENS_HIDDEN;
+    }
+    
+    free(all_data);
 }
 
 static void generate_all_noise(int8_t *noise_buffer, uint8_t input[32], int total_size) {
-    // Use SHA256 to generate the initial digest
     CSHA256 sha256;
     unsigned char digest[CSHA256::OUTPUT_SIZE];
     
     sha256.Write(input, 32);
     sha256.Finalize(digest);
     
-    // Use the digest repeatedly to fill the noise buffer
     for (int i = 0; i < total_size; i++) {
         noise_buffer[i] = digest[i % CSHA256::OUTPUT_SIZE];
     }
 }
 
-HashBuffers* init_hash_buffers() {
-    HashBuffers* buffers = static_cast<HashBuffers*>(malloc(sizeof(HashBuffers)));
-    if (!buffers) return nullptr;
+TensHashContext* tens_hash_init(uint8_t seed[32]) {
+    TensHashContext* ctx = static_cast<TensHashContext*>(malloc(sizeof(TensHashContext)));
+    if (!ctx) return nullptr;
+    
+    ctx->state = static_cast<uint8_t*>(calloc(TENS_HIDDEN, sizeof(uint8_t)));
+    ctx->next_state = static_cast<uint8_t*>(calloc(TENS_HIDDEN, sizeof(uint8_t)));
+    int total_noise_size = TENS_HIDDEN + (TENS_ROUNDS * TENS_HIDDEN) + TENS_IN_SIZE;
+    ctx->noise = static_cast<int8_t*>(malloc(total_noise_size * sizeof(int8_t)));
 
-    buffers->state = static_cast<uint8_t*>(calloc(HIDDEN, sizeof(uint8_t)));
-    buffers->next_state = static_cast<uint8_t*>(calloc(HIDDEN, sizeof(uint8_t)));
-
-    int total_noise_size = HIDDEN + (ROUNDS * HIDDEN) + IN_SIZE;
-    buffers->noise = static_cast<int8_t*>(malloc(total_noise_size * sizeof(int8_t)));
-
-    if (!buffers->state || !buffers->next_state || !buffers->noise) {
-        free(buffers->state);
-        free(buffers->next_state);
-        free(buffers->noise);
-        free(buffers);
+    if (!ctx->state || !ctx->next_state || !ctx->noise) {
+        if (ctx->state) free(ctx->state);
+        if (ctx->next_state) free(ctx->next_state);
+        if (ctx->noise) free(ctx->noise);
+        free(ctx);
         return nullptr;
     }
 
-    return buffers;
-}
-
-void free_hash_buffers(HashBuffers* buffers) {
-    if (buffers) {
-        free(buffers->state);
-        free(buffers->next_state);
-        free(buffers->noise);
-        free(buffers);
-    }
-}
-
-PrecomputedMatrices* precompute_matrices(uint8_t seed[32]) {
-    PrecomputedMatrices* matrices = static_cast<PrecomputedMatrices*>(malloc(sizeof(PrecomputedMatrices)));
-    if (!matrices) return nullptr;
-    
-    matrices->expand_mat = static_cast<uint8_t**>(malloc(HIDDEN * sizeof(uint8_t*)));
-    if (!matrices->expand_mat) {
-        free(matrices);
+    ctx->expand_mat = static_cast<uint8_t**>(malloc(TENS_HIDDEN * sizeof(uint8_t*)));
+    if (!ctx->expand_mat) {
+        free(ctx->state);
+        free(ctx->next_state);
+        free(ctx->noise);
+        free(ctx);
         return nullptr;
     }
-    
-    for (int i = 0; i < HIDDEN; i++) {
-        matrices->expand_mat[i] = static_cast<uint8_t*>(malloc(IN_SIZE * sizeof(uint8_t)));
-        if (!matrices->expand_mat[i]) {
-            for (int j = 0; j < i; j++) free(matrices->expand_mat[j]);
-            free(matrices->expand_mat);
-            free(matrices);
+
+    for (int i = 0; i < TENS_HIDDEN; i++) {
+        ctx->expand_mat[i] = static_cast<uint8_t*>(malloc(TENS_IN_SIZE * sizeof(uint8_t)));
+        if (!ctx->expand_mat[i]) {
+            for (int j = 0; j < i; j++) free(ctx->expand_mat[j]);
+            free(ctx->expand_mat);
+            free(ctx->state);
+            free(ctx->next_state);
+            free(ctx->noise);
+            free(ctx);
             return nullptr;
         }
     }
 
-    for (int r = 0; r < ROUNDS; r++) {
-        matrices->middle_mats[r] = static_cast<uint8_t**>(malloc(HIDDEN * sizeof(uint8_t*)));
-        if (!matrices->middle_mats[r]) {
-            for (int i = 0; i < HIDDEN; i++) free(matrices->expand_mat[i]);
-            free(matrices->expand_mat);
+    for (int r = 0; r < TENS_ROUNDS; r++) {
+        ctx->middle_mats[r] = static_cast<uint8_t**>(malloc(TENS_HIDDEN * sizeof(uint8_t*)));
+        if (!ctx->middle_mats[r]) {
+            for (int i = 0; i < TENS_HIDDEN; i++) free(ctx->expand_mat[i]);
+            free(ctx->expand_mat);
             for (int j = 0; j < r; j++) {
-                for (int i = 0; i < HIDDEN; i++) free(matrices->middle_mats[j][i]);
-                free(matrices->middle_mats[j]);
+                for (int i = 0; i < TENS_HIDDEN; i++) free(ctx->middle_mats[j][i]);
+                free(ctx->middle_mats[j]);
             }
-            free(matrices);
+            free(ctx->state);
+            free(ctx->next_state);
+            free(ctx->noise);
+            free(ctx);
             return nullptr;
         }
-        
-        for (int i = 0; i < HIDDEN; i++) {
-            matrices->middle_mats[r][i] = static_cast<uint8_t*>(malloc(HIDDEN * sizeof(uint8_t)));
-            if (!matrices->middle_mats[r][i]) {
-                for (int j = 0; j < i; j++) free(matrices->middle_mats[r][j]);
-                free(matrices->middle_mats[r]);
+
+        for (int i = 0; i < TENS_HIDDEN; i++) {
+            ctx->middle_mats[r][i] = static_cast<uint8_t*>(malloc(TENS_HIDDEN * sizeof(uint8_t)));
+            if (!ctx->middle_mats[r][i]) {
+                for (int j = 0; j < i; j++) free(ctx->middle_mats[r][j]);
+                free(ctx->middle_mats[r]);
                 for (int j = 0; j < r; j++) {
-                    for (int k = 0; k < HIDDEN; k++) free(matrices->middle_mats[j][k]);
-                    free(matrices->middle_mats[j]);
+                    for (int k = 0; k < TENS_HIDDEN; k++) free(ctx->middle_mats[j][k]);
+                    free(ctx->middle_mats[j]);
                 }
-                for (int j = 0; j < HIDDEN; j++) free(matrices->expand_mat[j]);
-                free(matrices->expand_mat);
-                free(matrices);
+                for (int j = 0; j < TENS_HIDDEN; j++) free(ctx->expand_mat[j]);
+                free(ctx->expand_mat);
+                free(ctx->state);
+                free(ctx->next_state);
+                free(ctx->noise);
+                free(ctx);
                 return nullptr;
             }
         }
     }
 
-    matrices->compress_mat = static_cast<uint8_t**>(malloc(IN_SIZE * sizeof(uint8_t*)));
-    if (!matrices->compress_mat) {
-        for (int r = 0; r < ROUNDS; r++) {
-            for (int i = 0; i < HIDDEN; i++) free(matrices->middle_mats[r][i]);
-            free(matrices->middle_mats[r]);
+    ctx->compress_mat = static_cast<uint8_t**>(malloc(TENS_IN_SIZE * sizeof(uint8_t*)));
+    if (!ctx->compress_mat) {
+        for (int r = 0; r < TENS_ROUNDS; r++) {
+            for (int i = 0; i < TENS_HIDDEN; i++) free(ctx->middle_mats[r][i]);
+            free(ctx->middle_mats[r]);
         }
-        for (int i = 0; i < HIDDEN; i++) free(matrices->expand_mat[i]);
-        free(matrices->expand_mat);
-        free(matrices);
+        for (int i = 0; i < TENS_HIDDEN; i++) free(ctx->expand_mat[i]);
+        free(ctx->expand_mat);
+        free(ctx->state);
+        free(ctx->next_state);
+        free(ctx->noise);
+        free(ctx);
         return nullptr;
     }
-    
-    for (int i = 0; i < IN_SIZE; i++) {
-        matrices->compress_mat[i] = static_cast<uint8_t*>(malloc(HIDDEN * sizeof(uint8_t)));
-        if (!matrices->compress_mat[i]) {
-            for (int j = 0; j < i; j++) free(matrices->compress_mat[j]);
-            free(matrices->compress_mat);
-            for (int r = 0; r < ROUNDS; r++) {
-                for (int j = 0; j < HIDDEN; j++) free(matrices->middle_mats[r][j]);
-                free(matrices->middle_mats[r]);
+
+    for (int i = 0; i < TENS_IN_SIZE; i++) {
+        ctx->compress_mat[i] = static_cast<uint8_t*>(malloc(TENS_HIDDEN * sizeof(uint8_t)));
+        if (!ctx->compress_mat[i]) {
+            for (int j = 0; j < i; j++) free(ctx->compress_mat[j]);
+            free(ctx->compress_mat);
+            for (int r = 0; r < TENS_ROUNDS; r++) {
+                for (int j = 0; j < TENS_HIDDEN; j++) free(ctx->middle_mats[r][j]);
+                free(ctx->middle_mats[r]);
             }
-            for (int j = 0; j < HIDDEN; j++) free(matrices->expand_mat[j]);
-            free(matrices->expand_mat);
-            free(matrices);
+            for (int j = 0; j < TENS_HIDDEN; j++) free(ctx->expand_mat[j]);
+            free(ctx->expand_mat);
+            free(ctx->state);
+            free(ctx->next_state);
+            free(ctx->noise);
+            free(ctx);
             return nullptr;
         }
     }
 
-    generate_all_matrices(matrices, seed);
-    return matrices;
+    generate_all_matrices(ctx, seed);
+    return ctx;
 }
 
-void free_matrices(PrecomputedMatrices* matrices) {
-    if (matrices) {
-        if (matrices->expand_mat) {
-            for (int i = 0; i < HIDDEN; i++) free(matrices->expand_mat[i]);
-            free(matrices->expand_mat);
+void tens_hash_free(TensHashContext* ctx) {
+    if (ctx) {
+        if (ctx->state) free(ctx->state);
+        if (ctx->next_state) free(ctx->next_state);
+        if (ctx->noise) free(ctx->noise);
+
+        if (ctx->expand_mat) {
+            for (int i = 0; i < TENS_HIDDEN; i++) free(ctx->expand_mat[i]);
+            free(ctx->expand_mat);
         }
 
-        for (int r = 0; r < ROUNDS; r++) {
-            if (matrices->middle_mats[r]) {
-                for (int i = 0; i < HIDDEN; i++) free(matrices->middle_mats[r][i]);
-                free(matrices->middle_mats[r]);
+        if (ctx->middle_mats) {
+            for (int r = 0; r < TENS_ROUNDS; r++) {
+                if (ctx->middle_mats[r]) {
+                    for (int i = 0; i < TENS_HIDDEN; i++) free(ctx->middle_mats[r][i]);
+                    free(ctx->middle_mats[r]);
+                }
             }
         }
 
-        if (matrices->compress_mat) {
-            for (int i = 0; i < IN_SIZE; i++) free(matrices->compress_mat[i]);
-            free(matrices->compress_mat);
+        if (ctx->compress_mat) {
+            for (int i = 0; i < TENS_IN_SIZE; i++) free(ctx->compress_mat[i]);
+            free(ctx->compress_mat);
         }
 
-        free(matrices);
+        free(ctx);
     }
 }
 
-void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices,
-                          HashBuffers* buffers, uint8_t output[IN_SIZE]) {
-    int total_noise_size = HIDDEN + (ROUNDS * HIDDEN) + IN_SIZE;
-    generate_all_noise(buffers->noise, input, total_noise_size);
+void tens_hash_precomputed(uint8_t input[TENS_IN_SIZE], TensHashContext* ctx, uint8_t output[TENS_IN_SIZE]) {
+    int total_noise_size = TENS_HIDDEN + (TENS_ROUNDS * TENS_HIDDEN) + TENS_IN_SIZE;
+    generate_all_noise(ctx->noise, input, total_noise_size);
 
-    int8_t *expand_noise = buffers->noise;
-    int8_t *middle_noise = buffers->noise + HIDDEN;
-    int8_t *compress_noise = buffers->noise + HIDDEN + (ROUNDS * HIDDEN);
+    int8_t *expand_noise = ctx->noise;
+    int8_t *middle_noise = ctx->noise + TENS_HIDDEN;
+    int8_t *compress_noise = ctx->noise + TENS_HIDDEN + (TENS_ROUNDS * TENS_HIDDEN);
 
-    matrix_multiply(matrices->expand_mat, input, buffers->state, expand_noise, HIDDEN, IN_SIZE);
+    matrix_multiply(ctx->expand_mat, input, ctx->state, expand_noise, TENS_HIDDEN, TENS_IN_SIZE);
 
-    for (uint32_t round = 0; round < ROUNDS; round++) {
-        matrix_multiply(matrices->middle_mats[round], buffers->state, buffers->next_state,
-                       middle_noise + (round * HIDDEN), HIDDEN, HIDDEN);
+    for (uint32_t round = 0; round < TENS_ROUNDS; round++) {
+        matrix_multiply(ctx->middle_mats[round], ctx->state, ctx->next_state,
+                       middle_noise + (round * TENS_HIDDEN), TENS_HIDDEN, TENS_HIDDEN);
 
-        uint8_t *temp = buffers->state;
-        buffers->state = buffers->next_state;
-        buffers->next_state = temp;
+        uint8_t *temp = ctx->state;
+        ctx->state = ctx->next_state;
+        ctx->next_state = temp;
     }
 
-    matrix_multiply(matrices->compress_mat, buffers->state, output, compress_noise, IN_SIZE, HIDDEN);
+    matrix_multiply(ctx->compress_mat, ctx->state, output, compress_noise, TENS_IN_SIZE, TENS_HIDDEN);
 }
 
-void tens_hash(uint8_t input[IN_SIZE], uint8_t seed[IN_SIZE], uint8_t output[IN_SIZE]) {
-    std::string input_hex, seed_hex;
-    for (int i = 0; i < IN_SIZE; i++) {
-        input_hex += strprintf("%02x", input[IN_SIZE - 1 - i]);
-        seed_hex += strprintf("%02x", seed[IN_SIZE - 1 - i]);
-    }
-    //LogPrintf("TENS_HASH Input: %s\n", input_hex);
-    //LogPrintf("TENS_HASH Seed: %s\n", seed_hex);
+void tens_hash(uint8_t input[TENS_IN_SIZE], uint8_t seed[TENS_IN_SIZE], uint8_t output[TENS_IN_SIZE]) {
+    TensHashContext* ctx = tens_hash_init(seed);
+    if (!ctx) return;
 
-    // Static cache variables for the previous seed, matrices, and buffers.
-    static bool cacheInitialized = false;
-    static uint8_t cachedSeed[IN_SIZE];
-    static PrecomputedMatrices* cachedMatrices = nullptr;
-    static HashBuffers* cachedBuffers = nullptr;
-
-    bool seedMatches = false;
-    if (cacheInitialized) {
-        seedMatches = (memcmp(cachedSeed, seed, IN_SIZE) == 0);
-    }
-
-    // If the cache is uninitialized or the seed has changed, allocate new ones.
-    if (!cacheInitialized || !seedMatches) {
-    	LogPrintf("TENS_HASH: initializing buffers...\n");
-        // Free previously cached matrices and buffers (if any)
-        if (cachedMatrices) {
-            free_matrices(cachedMatrices);
-            cachedMatrices = nullptr;
-        }
-        if (cachedBuffers) {
-            free_hash_buffers(cachedBuffers);
-            cachedBuffers = nullptr;
-        }
-        // Update the cached seed.
-        memcpy(cachedSeed, seed, IN_SIZE);
-        cacheInitialized = true;
-
-        cachedMatrices = precompute_matrices(seed);
-        cachedBuffers = init_hash_buffers();
-    }
-
-    // If either allocation failed, we must return.
-    if (!cachedMatrices || !cachedBuffers) {
-        //LogPrintf("TENS_HASH failed: allocation error\n");
-        return;
-    }
-
-    // Compute the hash using the cached matrices and buffers.
-    tens_hash_precomputed(input, cachedMatrices, cachedBuffers, output);
-
-    std::string output_hex;
-    for (int i = 0; i < IN_SIZE; i++) {
-        output_hex += strprintf("%02x", output[i]);
-    }
-    //LogPrintf("TENS_HASH Output: %s\n", output_hex);
+    tens_hash_precomputed(input, ctx, output);
+    tens_hash_free(ctx);
 }
