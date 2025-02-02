@@ -101,7 +101,7 @@ public:
         consensus.CSVHeight = 419328; // 000000000000000004a1b34462cb8aeebd5799177f7a29cf28f2d1961716b5b5
         consensus.SegwitHeight = 481824; // 0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893
         consensus.MinBIP9WarningHeight = 483840; // segwit activation height + miner confirmation window
-        consensus.powLimit = uint256{"0000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+        consensus.powLimit = uint256{"000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
         consensus.nPowTargetTimespan = 14 * 24 * 60 * 60; // two weeks
         //consensus.nPowTargetSpacing = 10 * 60;
         consensus.nPowTargetSpacing = 1 * 60;
@@ -141,11 +141,13 @@ public:
         m_assumed_chain_state_size = 14;
 
         //genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff, 1, 50 * COIN);
-        genesis = CreateGenesisBlock(1738337624, 0xda26, 0x1f00ffff, 1, 50 * COIN);
+        //genesis = CreateGenesisBlock(1738337624, 0xda26, 0x1f00ffff, 1, 50 * COIN);
+        genesis = CreateGenesisBlock(1738337624, 0x44b82f, 0x1e00ffff, 1, 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         printf("Genesis Block Hash: %s\n", consensus.hashGenesisBlock.ToString().c_str());
         printf("Merkle Root Hash: %s\n", genesis.hashMerkleRoot.ToString().c_str());
-        assert(consensus.hashGenesisBlock == uint256{"dd3884f48cdc4f187e15b3864ff9b1604d56657878335493b2af5ed1c089b0a4"});
+        //assert(consensus.hashGenesisBlock == uint256{"dd3884f48cdc4f187e15b3864ff9b1604d56657878335493b2af5ed1c089b0a4"});
+        assert(consensus.hashGenesisBlock == uint256{"c98c980927eaab552002ead60ce34caf166a6daf9945fd2059b5b438af113766"});
         assert(genesis.hashMerkleRoot == uint256{"485bc464e61956d85dda756d74e0ec872c594190d15ff9e37a00eac87c7d8fe0"});
 
         // Note that of those which support the service bits prefix, most only support a subset of

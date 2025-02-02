@@ -11,7 +11,7 @@ class HashAnalyzer:
     def __init__(self, hash_binary="./tens_hash"):
         self.hash_binary = hash_binary
         # Fixed seed for all hash operations
-        self.fixed_seed = "a" * 64
+        self.fixed_seed = "f" * 64
     
     def get_hash(self, input_hex):
         """Run the hash program with fixed seed and input"""
