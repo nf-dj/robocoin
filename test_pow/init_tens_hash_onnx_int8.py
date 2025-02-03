@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-This script creates an ONNX model that uses only int8 matrix multiplications
-using MatMulInteger. The model uses int8 inputs and weights, produces int32
+This script creates an ONNX model that uses only uint8 matrix multiplications
+(using MatMulInteger). The model uses uint8 inputs and weights, produces int32
 results from MatMulInteger, then applies an explicit modulo 256 reduction and
-casts the result back to int8. This ensures that arithmetic is done in a wrap‑around
-(mod 256) fashion.
+casts the result back to uint8. This ensures that arithmetic is done in a wrap‑around
+(mod 256) fashion and that the weight values match the FP32 model.
 """
 
 import sys
@@ -34,26 +34,35 @@ def generate_matrices(seed, num_rounds):
     zero_message = bytes(total_size)
     keystream = crypto_stream_chacha20_xor(zero_message, nonce, seed)
     
-    # Interpret the keystream as uint8, then view as int8 (two's complement).
-    # (Values ≥128 become negative, which is acceptable for mod‑256 arithmetic.)
-    data = np.frombuffer(keystream, dtype=np.uint8).astype(np.int8)
+    # Use uint8 directly so that values ≥128 remain as such.
+    data = np.frombuffer(keystream, dtype=np.uint8)
     
     print("Using seed:", seed.hex())
     pos = 0
 
     # --- Expand matrix ---
-    # We want to compute: [1, INPUT_SIZE] x [INPUT_SIZE, HIDDEN_SIZE] = [1, HIDDEN_SIZE].
+    # In the FP32 version, the expand matrix is computed as:
+    #    expand_matrix = data[pos:pos+(INPUT_SIZE*HIDDEN_SIZE)].reshape(INPUT_SIZE, HIDDEN_SIZE).T
+    # and printed as:
+    #    first 8 values: 118 184 218 65 159 7 41 183
+    #
+    # To get the same printed values, we do the same here:
     print("Expand matrix (first 8 values):")
     expand_data = data[pos: pos + (INPUT_SIZE * HIDDEN_SIZE)]
     for i in range(4):
         for j in range(2):
             print(str(int(expand_data[i * INPUT_SIZE + j])), end=" ")
     print()
-    expand_matrix = expand_data.reshape(INPUT_SIZE, HIDDEN_SIZE)
+    # This yields a matrix with shape (INPUT_SIZE, HIDDEN_SIZE) when reshaped,
+    # but the FP32 version transposes it for printing.
+    expand_matrix_full = expand_data.reshape(INPUT_SIZE, HIDDEN_SIZE).T  # shape (HIDDEN_SIZE, INPUT_SIZE)
+    # In the FP32 model, GEMM is done with transB=1 so the effective weight is expand_matrix_full.T.
+    # Here, we want to feed the effective weight directly.
+    expand_weight = expand_matrix_full.T   # shape (INPUT_SIZE, HIDDEN_SIZE)
     pos += (INPUT_SIZE * HIDDEN_SIZE)
     
     print("\nMatrix shapes:")
-    print(f"  expand_matrix: {expand_matrix.shape}")
+    print(f"  expand_weight: {expand_weight.shape}")  # expected (32,256)
     
     # --- Middle matrices ---
     middle_matrices = []
@@ -65,25 +74,29 @@ def generate_matrices(seed, num_rounds):
                 for j in range(2):
                     print(str(int(middle_data[i * HIDDEN_SIZE + j])), end=" ")
             print()
+        # In the FP32 version, m = middle_data.reshape(HIDDEN_SIZE, HIDDEN_SIZE)
+        # and GEMM uses transB=1 (effective weight = m.T).
+        # Here, we supply the effective weight directly:
         m = middle_data.reshape(HIDDEN_SIZE, HIDDEN_SIZE)
-        middle_matrices.append(m)
+        effective_middle = m.T  # shape (HIDDEN_SIZE, HIDDEN_SIZE)
+        middle_matrices.append(effective_middle)
         pos += (HIDDEN_SIZE * HIDDEN_SIZE)
         if r == 0:
-            print(f"  middle_matrices[0]: {m.shape}")
+            print(f"  middle_matrices[0]: {effective_middle.shape}")
     
     # --- Reduce matrix ---
-    # Instead of reshaping to [OUTPUT_SIZE, HIDDEN_SIZE] and transposing,
-    # we directly reshape the reduce data to shape [HIDDEN_SIZE, OUTPUT_SIZE]
-    # so that: [1, HIDDEN_SIZE] x [HIDDEN_SIZE, OUTPUT_SIZE] = [1, OUTPUT_SIZE].
+    # In the FP32 version, reduce_matrix = reduce_data.reshape(OUTPUT_SIZE, HIDDEN_SIZE)
+    # and then used with transB=1 so effective weight = reduce_matrix.T (shape (HIDDEN_SIZE, OUTPUT_SIZE)).
     print("Compress matrix (first 8 values):")
     reduce_data = data[pos: pos + (HIDDEN_SIZE * OUTPUT_SIZE)]
     for i in range(4):
         for j in range(2):
             print(str(int(reduce_data[i * HIDDEN_SIZE + j])), end=" ")
     print()
-    reduce_matrix = reduce_data.reshape(HIDDEN_SIZE, OUTPUT_SIZE)
+    rmat = reduce_data.reshape(OUTPUT_SIZE, HIDDEN_SIZE)
+    reduce_weight = rmat.T  # shape (HIDDEN_SIZE, OUTPUT_SIZE)
     
-    return expand_matrix, middle_matrices, reduce_matrix
+    return expand_weight, middle_matrices, reduce_weight
 
 def main(seed_hex, num_rounds):
     try:
@@ -91,16 +104,16 @@ def main(seed_hex, num_rounds):
     except ValueError as e:
         sys.exit("Error: " + str(e))
     
-    expand_matrix, middle_matrices, reduce_matrix = generate_matrices(seed, num_rounds)
+    expand_weight, middle_matrices, reduce_weight = generate_matrices(seed, num_rounds)
     
     print("\nMatrix shapes:")
-    print(f"  expand_matrix: {expand_matrix.shape}")
-    print(f"  middle_matrices[0]: {middle_matrices[0].shape}")
-    print(f"  reduce_matrix: {reduce_matrix.shape}")
+    print(f"  expand_weight: {expand_weight.shape}")      # Expected: (32,256)
+    print(f"  middle_matrices[0]: {middle_matrices[0].shape}")  # Expected: (256,256)
+    print(f"  reduce_weight: {reduce_weight.shape}")        # Expected: (256,32)
     
-    # --- Define graph inputs (all int8) ---
-    input_tensor = helper.make_tensor_value_info("input", onnx.TensorProto.INT8, [1, INPUT_SIZE])
-    error_tensor = helper.make_tensor_value_info("error", onnx.TensorProto.INT8, [1, INPUT_SIZE])
+    # --- Define graph inputs (all uint8) ---
+    input_tensor = helper.make_tensor_value_info("input", onnx.TensorProto.UINT8, [1, INPUT_SIZE])
+    error_tensor = helper.make_tensor_value_info("error", onnx.TensorProto.UINT8, [1, INPUT_SIZE])
     
     initializers = []
     nodes = []
@@ -109,8 +122,8 @@ def main(seed_hex, num_rounds):
     const_256 = helper.make_tensor("const_256", onnx.TensorProto.INT32, [], [256])
     initializers.append(const_256)
     
-    # Zero point constant for MatMulInteger (scalar int8 0)
-    zp = helper.make_tensor("zp", onnx.TensorProto.INT8, [], [0])
+    # Zero point constant for MatMulInteger (scalar uint8 0)
+    zp = helper.make_tensor("zp", onnx.TensorProto.UINT8, [], [0])
     initializers.append(zp)
     
     # --- Tiling error ---
@@ -121,13 +134,14 @@ def main(seed_hex, num_rounds):
     nodes.append(tile_error)
     
     # --- Expansion Layer ---
-    # MatMulInteger: [1, INPUT_SIZE] x [INPUT_SIZE, HIDDEN_SIZE] => [1, HIDDEN_SIZE] (int32 result)
-    expand_weight = helper.make_tensor("expand_weights", onnx.TensorProto.INT8, expand_matrix.shape, expand_matrix.flatten().tolist())
-    initializers.append(expand_weight)
+    # MatMulInteger: [1, INPUT_SIZE] x [INPUT_SIZE, HIDDEN_SIZE] -> [1, HIDDEN_SIZE]
+    # Here, expand_weight has shape (32,256), which yields the desired result.
+    expand_weight_tensor = helper.make_tensor("expand_weights", onnx.TensorProto.UINT8, expand_weight.shape, expand_weight.flatten().tolist())
+    initializers.append(expand_weight_tensor)
     matmul_exp = helper.make_node("MatMulInteger", ["input", "expand_weights", "zp", "zp"], ["expand_mm"], name="matmul_exp")
     nodes.append(matmul_exp)
     
-    # Add bias: error_256 (int8) needs to be cast to int32 before addition.
+    # Add bias: error_256 (uint8) is cast to int32 before addition.
     cast_error_exp = helper.make_node("Cast", ["error_256"], ["error_256_int32"], to=onnx.TensorProto.INT32, name="cast_error_exp")
     nodes.append(cast_error_exp)
     add_exp = helper.make_node("Add", ["expand_mm", "error_256_int32"], ["expand_add_int32"], name="add_exp")
@@ -137,8 +151,8 @@ def main(seed_hex, num_rounds):
     mod_exp = helper.make_node("Mod", ["expand_add_int32", "const_256"], ["expand_mod_int32"], name="mod_exp")
     nodes.append(mod_exp)
     
-    # Cast result back to int8.
-    cast_exp = helper.make_node("Cast", ["expand_mod_int32"], ["expand_final"], to=onnx.TensorProto.INT8, name="cast_exp")
+    # Cast result back to uint8.
+    cast_exp = helper.make_node("Cast", ["expand_mod_int32"], ["expand_final"], to=onnx.TensorProto.UINT8, name="cast_exp")
     nodes.append(cast_exp)
     
     prev_output = "expand_final"
@@ -146,8 +160,8 @@ def main(seed_hex, num_rounds):
     # --- Middle Layers ---
     for i in range(num_rounds):
         weight_name = f"weights_{i}"
-        m = middle_matrices[i]
-        weight_tensor = helper.make_tensor(weight_name, onnx.TensorProto.INT8, m.shape, m.flatten().tolist())
+        m = middle_matrices[i]  # effective weight already computed (shape (256,256))
+        weight_tensor = helper.make_tensor(weight_name, onnx.TensorProto.UINT8, m.shape, m.flatten().tolist())
         initializers.append(weight_tensor)
         
         matmul_mid = helper.make_node("MatMulInteger", [prev_output, weight_name, "zp", "zp"], [f"gemm_{i}_mm"], name=f"matmul_mid_{i}")
@@ -159,16 +173,16 @@ def main(seed_hex, num_rounds):
         nodes.append(add_mid)
         mod_mid = helper.make_node("Mod", [f"gemm_{i}_add_int32", "const_256"], [f"hidden_{i}_int32"], name=f"mod_mid_{i}")
         nodes.append(mod_mid)
-        cast_mid = helper.make_node("Cast", [f"hidden_{i}_int32"], [f"hidden_{i}"], to=onnx.TensorProto.INT8, name=f"cast_mid_{i}")
+        cast_mid = helper.make_node("Cast", [f"hidden_{i}_int32"], [f"hidden_{i}"], to=onnx.TensorProto.UINT8, name=f"cast_mid_{i}")
         nodes.append(cast_mid)
         
         prev_output = f"hidden_{i}"
     
     # --- Final Reduction Layer ---
-    # Now, reduce_weights is pre-transposed with shape [HIDDEN_SIZE, OUTPUT_SIZE].
-    reduce_weight = helper.make_tensor("reduce_weights", onnx.TensorProto.INT8, reduce_matrix.shape, reduce_matrix.flatten().tolist())
-    initializers.append(reduce_weight)
-    # Use MatMulInteger directly with reduce_weights
+    # reduce_weight has shape (256,32) so that:
+    # [1, HIDDEN_SIZE] x [HIDDEN_SIZE, OUTPUT_SIZE] = [1, OUTPUT_SIZE].
+    reduce_weight_tensor = helper.make_tensor("reduce_weights", onnx.TensorProto.UINT8, reduce_weight.shape, reduce_weight.flatten().tolist())
+    initializers.append(reduce_weight_tensor)
     matmul_fin = helper.make_node("MatMulInteger", [prev_output, "reduce_weights", "zp", "zp"], ["final_mm"], name="matmul_fin")
     nodes.append(matmul_fin)
     
@@ -178,21 +192,21 @@ def main(seed_hex, num_rounds):
     nodes.append(add_fin)
     mod_fin = helper.make_node("Mod", ["final_add_int32", "const_256"], ["final_mod_int32"], name="mod_fin")
     nodes.append(mod_fin)
-    cast_fin = helper.make_node("Cast", ["final_mod_int32"], ["output"], to=onnx.TensorProto.INT8, name="cast_fin")
+    cast_fin = helper.make_node("Cast", ["final_mod_int32"], ["output"], to=onnx.TensorProto.UINT8, name="cast_fin")
     nodes.append(cast_fin)
     
-    # Define the output tensor: int8 [1, OUTPUT_SIZE]
-    output_tensor = helper.make_tensor_value_info("output", onnx.TensorProto.INT8, [1, OUTPUT_SIZE])
+    # Define the output tensor: uint8 [1, OUTPUT_SIZE]
+    output_tensor = helper.make_tensor_value_info("output", onnx.TensorProto.UINT8, [1, OUTPUT_SIZE])
     
     graph = helper.make_graph(
         nodes=nodes,
-        name="TensHashInt8_Mod",
+        name="TensHashUint8_Mod",
         inputs=[input_tensor, error_tensor],
         outputs=[output_tensor],
         initializer=initializers,
     )
     
-    model = helper.make_model(graph, producer_name="tens-hash-int8-mod", opset_imports=[helper.make_opsetid("", 13)])
+    model = helper.make_model(graph, producer_name="tens-hash-uint8-mod", opset_imports=[helper.make_opsetid("", 13)])
     
     print("\nModel Structure:")
     print("Inputs:")
@@ -210,7 +224,7 @@ def main(seed_hex, num_rounds):
         print(f"  {out.name}: {dims}")
     
     onnx.save(model, "tens_hash_int8.onnx")
-    print("\nOptimized INT8 ONNX model saved as tens_hash_int8.onnx")
+    print("\nOptimized UINT8 ONNX model saved as tens_hash_int8.onnx")
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
