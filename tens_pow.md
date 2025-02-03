@@ -69,7 +69,7 @@ Neural network format implementations:
 - `tens_hash_fp32.onnx`: FP32 version
 - `tens_hash_int8.onnx`: INT8 version 
 
-The computation graph structure can be visualized as follows:
+The computation graph structure for a single round can be visualized as follows (the full implementation chains 64 such rounds):
 
 ![ONNX Computation Graph](test_pow/images/tens_hash_fp32.onnx.svg)
 
