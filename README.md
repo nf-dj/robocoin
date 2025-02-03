@@ -23,6 +23,8 @@ TensCoin replaces Bitcoin's SHA256d with a tensor-based proof-of-work that uses 
    ```
 4. **Validation:** Check the final output for the required number of leading zeros.
 
+See [Proof of Work Design](tens_pow.md) for detailed technical analysis.
+
 ### Key Parameters
 - **Hidden Dimension:** 256
 - **Matrix Precision:** 8-bit integers  
