@@ -103,6 +103,9 @@ static void generate_matrices(uint8_t **expand_mat,
                             uint8_t **middle_mats[ROUNDS],
                             uint8_t **compress_mat,
                             uint8_t seed[32]) {
+    printf("Using seed: ");
+    for (int i = 0; i < 32; i++) printf("%02x", seed[i]);    
+    printf("\n");
     size_t total_size = (HIDDEN * IN_SIZE) + (ROUNDS * HIDDEN * HIDDEN) + (IN_SIZE * HIDDEN);
     uint8_t *data = malloc(total_size);
     if (!data) {
@@ -114,14 +117,37 @@ static void generate_matrices(uint8_t **expand_mat,
 
     uint8_t *pos = data;
     memcpy(expand_mat[0], pos, HIDDEN * IN_SIZE);
+    printf("Expand matrix (first 8 values):\n");
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 2; j++) {
+            printf("%u ", (unsigned int)pos[i * IN_SIZE + j]);
+        }
+    }
+    printf("\n");
     pos += HIDDEN * IN_SIZE;
 
     for (int r = 0; r < ROUNDS; r++) {
         memcpy(middle_mats[r][0], pos, HIDDEN * HIDDEN);
+        if (r == 0) {
+            printf("First middle matrix (first 8 values):\n");
+            for (int i = 0; i < 4; i++) {
+                for (int j = 0; j < 2; j++) {
+                    printf("%u ", (unsigned int)pos[i * HIDDEN + j]);
+                }
+            }
+            printf("\n");
+        }
         pos += HIDDEN * HIDDEN;
     }
 
     memcpy(compress_mat[0], pos, IN_SIZE * HIDDEN);
+    printf("Compress matrix (first 8 values):\n");
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 2; j++) {
+            printf("%u ", (unsigned int)pos[i * HIDDEN + j]);
+        }
+    }
+    printf("\n");
     free(data);
 }
 
