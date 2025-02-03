@@ -43,6 +43,9 @@ def generate_matrices(seed, num_rounds):
     expand_matrix = expand_data.reshape(INPUT_SIZE, HIDDEN_SIZE).T
     pos += (INPUT_SIZE * HIDDEN_SIZE)
     
+    print("\nMatrix shapes:")
+    print(f"  expand_matrix: {expand_matrix.shape}")
+    
     middle_matrices = []
     for r in range(num_rounds):
         middle_data = data[pos: pos + (HIDDEN_SIZE * HIDDEN_SIZE)]
@@ -56,6 +59,8 @@ def generate_matrices(seed, num_rounds):
         m = middle_data.reshape(HIDDEN_SIZE, HIDDEN_SIZE)
         middle_matrices.append(m)
         pos += (HIDDEN_SIZE * HIDDEN_SIZE)
+        if r == 0:
+            print(f"  middle_matrices[0]: {m.shape}")
     
     print("Compress matrix (first 8 values):")
     reduce_data = data[pos: pos + (HIDDEN_SIZE * OUTPUT_SIZE)]
@@ -64,7 +69,8 @@ def generate_matrices(seed, num_rounds):
             print(str(int(reduce_data[i * HIDDEN_SIZE + j])), end=" ")
     print()
     
-    reduce_matrix = reduce_data.reshape(HIDDEN_SIZE, OUTPUT_SIZE)
+    reduce_matrix = reduce_data.reshape(OUTPUT_SIZE, HIDDEN_SIZE)  # Reshape to [32, 256]
+
     
     return expand_matrix, middle_matrices, reduce_matrix
 
@@ -75,6 +81,11 @@ def main(seed_hex, num_rounds):
         sys.exit("Error: " + str(e))
     
     expand_matrix, middle_matrices, reduce_matrix = generate_matrices(seed, num_rounds)
+    
+    print("\nMatrix shapes:")
+    print(f"  expand_matrix: {expand_matrix.shape}")
+    print(f"  middle_matrices[0]: {middle_matrices[0].shape}")
+    print(f"  reduce_matrix: {reduce_matrix.shape}")
     
     # Define graph inputs - using FP32 directly
     input_tensor = helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, [1, INPUT_SIZE])
@@ -103,7 +114,8 @@ def main(seed_hex, num_rounds):
         ["input", "expand_weights", "big_noise"],
         ["expand_add"],
         alpha=1.0,
-        beta=1.0
+        beta=1.0,
+        transB=1  # Explicitly transpose B (weights)
     )
     nodes.append(expand_gemm)
     
@@ -130,7 +142,8 @@ def main(seed_hex, num_rounds):
             [prev_output, weight_name, "big_noise"],
             [f"gemm_{i}"],
             alpha=1.0,
-            beta=1.0
+            beta=1.0,
+            transB=1  # Explicitly transpose B (weights)
         )
         
         # Apply modulo 256 
@@ -154,7 +167,8 @@ def main(seed_hex, num_rounds):
         [prev_output, "reduce_weights", "small_noise"],
         ["final_gemm"],
         alpha=1.0,
-        beta=1.0
+        beta=1.0,
+        transB=1  # Explicitly transpose B (weights)
     )
     
     # Apply final modulo 256

@@ -47,6 +47,11 @@ def run_model(hex_input):
     # Compute both noise vectors from input
     small_noise, big_noise = compute_noise_vectors(input_array)
     
+    print("Input shapes:")
+    print(f"  input: {input_array.shape}")
+    print(f"  small_noise: {small_noise.shape}")
+    print(f"  big_noise: {big_noise.shape}")
+
     # Run inference
     output = session.run(None, {
         "input": input_array,
