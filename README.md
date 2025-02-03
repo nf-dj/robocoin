@@ -1,4 +1,4 @@
-# TensCoin: Bitcoin with AI-friendly Proof of Work
+# 🤖 TensCoin: Bitcoin with AI-friendly Proof of Work
 
 TensCoin is a Bitcoin fork exploring a new approach to proof-of-work designed for the AI era. It implements a tensor-based mining algorithm inspired by the Learning with Errors (LWE) problem, aiming to enable efficient hardware sharing between cryptocurrency mining and AI workloads. By repurposing widely distributed mining hardware, TensCoin has the potential to diversify and democratize AI computation—helping to break the concentration of processing power in the data centers of a few big companies.
 
