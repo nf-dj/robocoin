@@ -89,8 +89,7 @@ def main(seed_hex, num_rounds):
     
     # Define graph inputs - using FP32 directly
     input_tensor = helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, [1, INPUT_SIZE])
-    small_noise = helper.make_tensor_value_info("small_noise", onnx.TensorProto.FLOAT, [1, INPUT_SIZE])
-    big_noise = helper.make_tensor_value_info("big_noise", onnx.TensorProto.FLOAT, [1, HIDDEN_SIZE])
+    error_tensor = helper.make_tensor_value_info("error", onnx.TensorProto.FLOAT, [1, INPUT_SIZE])
     
     initializers = []
     nodes = []
@@ -108,10 +107,27 @@ def main(seed_hex, num_rounds):
     )
     initializers.append(expand_weight_tensor)
     
+    # Add repeats constant for error tiling
+    repeats = helper.make_tensor(
+        "repeats",
+        onnx.TensorProto.INT64,
+        [2],  # Shape is [2] for repeating [1, 32] input
+        [1, 8]  # Repeat first dim 1x, second dim 8x to get [1, 256]
+    )
+    initializers.append(repeats)
+    
+    # Tile error for use in 256-dim operations
+    tile_error = helper.make_node(
+        "Tile",
+        ["error", "repeats"],
+        ["error_256"]
+    )
+    nodes.append(tile_error)
+    
     # Initial expansion using GEMM
     expand_gemm = helper.make_node(
         "Gemm",
-        ["input", "expand_weights", "big_noise"],
+        ["input", "expand_weights", "error_256"],
         ["expand_add"],
         alpha=1.0,
         beta=1.0,
@@ -139,7 +155,7 @@ def main(seed_hex, num_rounds):
         # GEMM + Modulo sequence
         gemm = helper.make_node(
             "Gemm",
-            [prev_output, weight_name, "big_noise"],
+            [prev_output, weight_name, "error_256"],
             [f"gemm_{i}"],
             alpha=1.0,
             beta=1.0,
@@ -164,7 +180,7 @@ def main(seed_hex, num_rounds):
     # Final GEMM with small_noise for reduction
     final_gemm = helper.make_node(
         "Gemm",
-        [prev_output, "reduce_weights", "small_noise"],
+        [prev_output, "reduce_weights", "error"],
         ["final_gemm"],
         alpha=1.0,
         beta=1.0,
@@ -172,18 +188,18 @@ def main(seed_hex, num_rounds):
     )
     
     # Apply final modulo 256
-    final_mod = helper.make_node("Mod", ["final_gemm", "const_256"], ["final"], fmod=1)
+    final_mod = helper.make_node("Mod", ["final_gemm", "const_256"], ["output"], fmod=1)
     
     nodes.extend([final_gemm, final_mod])
     
     # Define output tensor
-    output_tensor = helper.make_tensor_value_info("final", onnx.TensorProto.FLOAT, [1, OUTPUT_SIZE])
+    output_tensor = helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, [1, OUTPUT_SIZE])
     
     # Create graph
     graph = helper.make_graph(
         nodes=nodes,
         name="TensHashFp32",
-        inputs=[input_tensor, small_noise, big_noise],
+        inputs=[input_tensor, error_tensor],
         outputs=[output_tensor],
         initializer=initializers,
     )

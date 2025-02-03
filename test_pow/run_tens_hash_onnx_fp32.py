@@ -15,24 +15,18 @@ def hex_to_float32_array(hex_str):
     byte_array = bytes.fromhex(hex_str)
     return np.frombuffer(byte_array, dtype=np.uint8).astype(np.float32).reshape(1, 32)
 
-def compute_noise_vectors(input_array):
-    """
-    Compute both small and big noise vectors from input using SHA-256.
-    Returns two arrays:
-    - small_noise: shape [1, 32] for first/last operations
-    - big_noise: shape [1, 256] for middle operations
+def sha256_to_error(input_array):
+    """Compute error vector from input using SHA-256.
+    Returns array with shape [1, 32] for error input
     """
     # Get the SHA-256 digest of the input
     input_bytes = input_array.astype(np.uint8).tobytes()
     digest = hashlib.sha256(input_bytes).digest()
     
-    # Small noise expanded to [1, 256] to match GEMM dimensions
-    small_noise = np.array([digest[i % 32] for i in range(32)], dtype=np.float32).reshape(1, 32)
+    # Error is first 32 bytes shaped to [1, 32]
+    error = np.array([digest[i] for i in range(32)], dtype=np.float32).reshape(1, 32)
     
-    # Big noise is first 256 bytes (repeating digest) reshaped to [1, 256]
-    big_noise = np.array([digest[i % 32] for i in range(256)], dtype=np.float32).reshape(1, 256)
-    
-    return small_noise, big_noise
+    return error
 
 def float32_array_to_hex(float32_array):
     """Convert a NumPy float32 array to a 32-byte hex string."""
@@ -44,19 +38,17 @@ def run_model(hex_input):
     # Convert hex string to float32 array (shape [1,32])
     input_array = hex_to_float32_array(hex_input)
     
-    # Compute both noise vectors from input
-    small_noise, big_noise = compute_noise_vectors(input_array)
+    # Compute error vector from input
+    error = sha256_to_error(input_array)
     
     print("Input shapes:")
     print(f"  input: {input_array.shape}")
-    print(f"  small_noise: {small_noise.shape}")
-    print(f"  big_noise: {big_noise.shape}")
+    print(f"  error: {error.shape}")
 
     # Run inference
     output = session.run(None, {
         "input": input_array,
-        "small_noise": small_noise,
-        "big_noise": big_noise
+        "error": error
     })[0]
     
     # Convert output to hex
