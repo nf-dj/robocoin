@@ -14,13 +14,11 @@ extern "C" {
 // Combined structure for hash computation context
 typedef struct {
     // Matrix data - stored in contiguous blocks
-    int8_t *expand_mat;    // Single block of size TENS_HIDDEN * TENS_IN_SIZE
     int8_t *middle_mats;   // Single block of size TENS_ROUNDS * TENS_HIDDEN * TENS_HIDDEN
-    int8_t *compress_mat;  // Single block of size TENS_IN_SIZE * TENS_HIDDEN
     
     // Buffer data
-    int8_t *state;         // Size TENS_HIDDEN
-    int8_t *next_state;    // Size TENS_HIDDEN
+    uint8_t *state;         // Size TENS_HIDDEN
+    uint8_t *next_state;    // Size TENS_HIDDEN
     int8_t *noise;         // Holds all noise for all rounds
 } TensHashContext;
 
