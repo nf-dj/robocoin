@@ -13,7 +13,6 @@
 #define HIDDEN 256
 #define ROUNDS 64
 #define BATCH_SIZE 8192 // tested on m1
-#define MATRIX_CHUNK_SIZE 16 // Process this many matrix rows at once
 #define OPS_PER_HASH (32*256*2+256+(256*256*2+256)*64+256*32*2+256)
 
 @interface TensPowMetal : NSObject
