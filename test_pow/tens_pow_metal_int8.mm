@@ -13,6 +13,7 @@
 #define HIDDEN 256
 #define ROUNDS 64
 #define BATCH_SIZE 8192 // tested on m1
+#define MATRIX_CHUNK_SIZE 16 // Process this many matrix rows at once
 #define OPS_PER_HASH (32*256*2+256+(256*256*2+256)*64+256*32*2+256)
 
 @interface TensPowMetal : NSObject
@@ -213,10 +214,12 @@
     [computeEncoder setBuffer:outputBuffer offset:0 atIndex:5];
     
     // Configure threading
+    // Configure threading for new approach
     MTLSize gridSize = MTLSizeMake(count, 1, 1);
     MTLSize threadGroupSize = MTLSizeMake(MIN(count, 256), 1, 1);
     
-    [computeEncoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
+    [computeEncoder dispatchThreads:gridSize
+              threadsPerThreadgroup:threadGroupSize];
     [computeEncoder endEncoding];
     
     [commandBuffer commit];
@@ -345,6 +348,7 @@ int main(int argc, char *argv[]) {
                 }
                 
                 if (zeros >= difficulty) {
+                //if (0) {
                     time_t end_time = time(NULL);
                     double duration = difftime(end_time, start_time);
                     uint64_t total_attempts = attempts + i;
