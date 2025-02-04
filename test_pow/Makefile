@@ -24,7 +24,7 @@ LDFLAGS = -L$(OPENSSL_PATH)/lib -L$(SODIUM_PATH)/lib \
           -lssl -lcrypto -lsodium
 
 # Targets
-all: tens_hash tens_pow tens_pow_metal default.metallib check_metal
+all: tens_hash tens_pow tens_pow_metal_int8 default.metallib check_metal
 
 check_metal: check_metal.mm
 	$(CXX) -framework Metal -framework Foundation -o $@ $^
@@ -35,15 +35,15 @@ tens_hash: tens_hash.c
 tens_pow: tens_pow.c tens_hash.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-tens_pow_metal: tens_pow_metal.mm
+tens_pow_metal_int8: tens_pow_metal_int8.mm
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
-default.metallib: tens_pow_metal.metal
-	$(METAL_PATH) -c tens_pow_metal.metal -o tens_pow_metal.air
-	$(METALLIB_PATH) tens_pow_metal.air -o default.metallib
-	rm -f tens_pow_metal.air
+default.metallib: tens_pow_metal_int8.metal
+	$(METAL_PATH) -c tens_pow_metal_int8.metal -o tens_pow_metal_int8.air
+	$(METALLIB_PATH) tens_pow_metal_int8.air -o default.metallib
+	rm -f tens_pow_metal_int8.air
 
 clean:
-	rm -f tens_hash tens_pow tens_pow_metal *.air *.metallib
+	rm -f tens_hash tens_pow tens_pow_metal_int8 *.air *.metallib
 
 .PHONY: all clean
