@@ -12,7 +12,7 @@
 #define IN_SIZE 32
 #define HIDDEN 256
 #define ROUNDS 64
-#define BATCH_SIZE 256
+#define BATCH_SIZE 8192 // tested on m1
 #define OPS_PER_HASH (256*256*64+32*256*2)
 
 @interface TensPowMetal : NSObject
