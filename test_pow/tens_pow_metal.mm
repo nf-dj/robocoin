@@ -7,11 +7,12 @@
 #include <time.h>
 #include <sodium.h>
 #include <inttypes.h>
+#include <unistd.h>
 
 #define IN_SIZE 32
 #define HIDDEN 256
 #define ROUNDS 64
-#define BATCH_SIZE 256  // Process multiple nonces in parallel
+#define BATCH_SIZE 256
 #define OPS_PER_HASH (256*256*64+32*256*2)
 
 @interface TensPowMetal : NSObject
@@ -31,61 +32,153 @@
 
 @implementation TensPowMetal
 
+
 - (instancetype)initWithSeed:(uint8_t*)seed {
     self = [super init];
     if (self) {
+        NSLog(@"Initializing Metal miner...");
+        NSLog(@"Current working directory: %@", [[NSFileManager defaultManager] currentDirectoryPath]);
+        // Get Metal device
+        NSLog(@"Attempting to get Metal device...");
+        NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+        NSLog(@"Available Metal devices: %@", devices);
+        
+        // Try default device first
         _device = MTLCreateSystemDefaultDevice();
+        
+        // If default device failed, use first available device
+        if (!_device && devices.count > 0) {
+            _device = devices.firstObject;
+            NSLog(@"Using first available device instead: %@", _device);
+        }
+        
         if (!_device) {
-            NSLog(@"Metal is not supported on this device");
+            NSLog(@"No Metal device available");
             return nil;
         }
+        
+        // Check if device supports Metal API version we need
+        if (![_device supportsFamily:MTLGPUFamilyApple7]) {
+            NSLog(@"Device %@ may not support required Metal features", _device.name);
+        }
+        
+        NSLog(@"Using Metal device: %@ (headless: %d)", _device.name, _device.isHeadless);
+        NSLog(@"Using Metal device: %@", _device.name);
         
         _commandQueue = [_device newCommandQueue];
-        
-        // Load Metal library and create pipeline state
-        NSError *error = nil;
-        id<MTLLibrary> defaultLibrary = [_device newDefaultLibrary];
-        if (!defaultLibrary) {
-            NSLog(@"Failed to load Metal library");
+        if (!_commandQueue) {
+            NSLog(@"Failed to create command queue");
             return nil;
         }
         
-        id<MTLFunction> hashFunction = [defaultLibrary newFunctionWithName:@"tensor_hash_metal"];
-        _hashPipelineState = [_device newComputePipelineStateWithFunction:hashFunction error:&error];
+        // Load Metal library
+        NSError *error = nil;
+        NSString *currentPath = [[NSFileManager defaultManager] currentDirectoryPath];
+        NSString *libraryPath = [currentPath stringByAppendingPathComponent:@"default.metallib"];
+        NSLog(@"Attempting to load Metal library from: %@", libraryPath);
         
+        // Check if file exists
+        if (![[NSFileManager defaultManager] fileExistsAtPath:libraryPath]) {
+            NSLog(@"Metal library file does not exist at path: %@", libraryPath);
+            return nil;
+        }
+        
+        // Try to load library
+        id<MTLLibrary> defaultLibrary = [_device newLibraryWithFile:libraryPath error:&error];
+        if (!defaultLibrary) {
+            NSLog(@"Failed to load Metal library from path %@: %@", libraryPath, error);
+            return nil;
+        }
+        NSLog(@"Successfully loaded Metal library");
+        
+        id<MTLFunction> hashFunction = [defaultLibrary newFunctionWithName:@"tensor_hash_metal"];
+        if (!hashFunction) {
+            NSLog(@"Failed to find tensor_hash_metal function");
+            return nil;
+        }
+        
+        _hashPipelineState = [_device newComputePipelineStateWithFunction:hashFunction error:&error];
         if (!_hashPipelineState) {
             NSLog(@"Failed to create pipeline state: %@", error);
             return nil;
         }
         
         // Generate matrices using libsodium
+        NSLog(@"Starting matrix initialization...");
         size_t total_size = (HIDDEN * IN_SIZE) + (ROUNDS * HIDDEN * HIDDEN) + (IN_SIZE * HIDDEN);
+        NSLog(@"Allocating %zu bytes for matrices", total_size);
+        
         uint8_t *data = (uint8_t*)malloc(total_size);
+        if (!data) {
+            NSLog(@"Failed to allocate memory for matrices");
+            return nil;
+        }
+        NSLog(@"Successfully allocated memory for matrices");
+        
+        NSLog(@"Generating matrices using ChaCha20...");
         unsigned char nonce[crypto_stream_chacha20_NONCEBYTES] = {0};
-        crypto_stream_chacha20(data, total_size, nonce, seed);
+        if (crypto_stream_chacha20(data, total_size, nonce, seed) != 0) {
+            NSLog(@"Failed to generate matrices with ChaCha20");
+            free(data);
+            return nil;
+        }
+        NSLog(@"Successfully generated matrices");
         
-        // Upload matrices to GPU memory (using private storage mode for efficiency)
+        // Check device limits
+        NSLog(@"Checking device buffer size limits...");
+        NSUInteger maxBufferLength = _device.maxBufferLength;
+        NSLog(@"Maximum buffer length: %lu bytes", (unsigned long)maxBufferLength);
+        
+        if (ROUNDS * HIDDEN * HIDDEN > maxBufferLength) {
+        NSLog(@"Middle matrices buffer size exceeds device limit");
+        free(data);
+            return nil;
+        }
+
+        // Create Metal buffers
         uint8_t *pos = data;
-        
-        // Expansion matrix
+        NSLog(@"Creating Metal buffers...");
+
+        NSLog(@"Creating expansion matrix buffer (size: %d bytes)...", HIDDEN * IN_SIZE);
         _expandMatBuffer = [_device newBufferWithBytes:pos
                                               length:HIDDEN * IN_SIZE
-                                             options:MTLResourceStorageModePrivate];
+                                             options:MTLResourceStorageModeShared];
+        if (!_expandMatBuffer) {
+            NSLog(@"Failed to create expansion matrix buffer");
+            free(data);
+            return nil;
+        }
         pos += HIDDEN * IN_SIZE;
-        
-        // Middle matrices (all in one buffer)
+        NSLog(@"Expansion matrix buffer created successfully");
+
+        // Middle matrices
+        NSLog(@"Creating middle matrices buffer (size: %d bytes)...", ROUNDS * HIDDEN * HIDDEN);
         _middleMatBuffers = [_device newBufferWithBytes:pos
-                                              length:ROUNDS * HIDDEN * HIDDEN
-                                             options:MTLResourceStorageModePrivate];
+                                               length:ROUNDS * HIDDEN * HIDDEN
+                                              options:MTLResourceStorageModeShared];
+        if (!_middleMatBuffers) {
+            NSLog(@"Failed to create middle matrices buffer");
+            free(data);
+            return nil;
+        }
         pos += ROUNDS * HIDDEN * HIDDEN;
-        
+        NSLog(@"Middle matrices buffer created successfully");
+
         // Compression matrix
+        NSLog(@"Creating compression matrix buffer (size: %d bytes)...", IN_SIZE * HIDDEN);
         _compressMatBuffer = [_device newBufferWithBytes:pos
                                                 length:IN_SIZE * HIDDEN
-                                               options:MTLResourceStorageModePrivate];
+                                               options:MTLResourceStorageModeShared];
+        if (!_compressMatBuffer) {
+            NSLog(@"Failed to create compression matrix buffer");
+            free(data);
+            return nil;
+        }
         
         free(data);
+        NSLog(@"Matrix initialization completed successfully");
     }
+    NSLog(@"TensPowMetal initialization completed");
     return self;
 }
 
@@ -93,14 +186,14 @@
               noiseVectors:(const int8_t*)noiseVectors 
                     count:(int)count 
                   outputs:(uint8_t*)outputs {
-    // Create buffers for input/output
+    // Create input/output buffers
     id<MTLBuffer> nonceBuffer = [_device newBufferWithBytes:nonces
                                                    length:count * IN_SIZE
                                                   options:MTLResourceStorageModeShared];
     
     id<MTLBuffer> noiseBuffer = [_device newBufferWithBytes:noiseVectors
-                                                    length:count * IN_SIZE
-                                                   options:MTLResourceStorageModeShared];
+                                                   length:count * IN_SIZE
+                                                  options:MTLResourceStorageModeShared];
     
     id<MTLBuffer> outputBuffer = [_device newBufferWithLength:count * IN_SIZE
                                                     options:MTLResourceStorageModeShared];
@@ -119,23 +212,25 @@
     [computeEncoder setBuffer:_compressMatBuffer offset:0 atIndex:4];
     [computeEncoder setBuffer:outputBuffer offset:0 atIndex:5];
     
-    // Calculate dispatch size
+    // Configure threading
     MTLSize gridSize = MTLSizeMake(count, 1, 1);
     MTLSize threadGroupSize = MTLSizeMake(MIN(count, 256), 1, 1);
     
     [computeEncoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
     [computeEncoder endEncoding];
     
-    // Execute and wait
     [commandBuffer commit];
     [commandBuffer waitUntilCompleted];
     
-    // Copy results back
     memcpy(outputs, [outputBuffer contents], count * IN_SIZE);
+    
+    // Clean up
+    // Metal buffers will be automatically released by ARC
 }
 
 @end
 
+// Helper functions for hex printing and bit counting
 void print_hex(uint8_t *bytes, size_t len) {
     for (size_t i = 0; i < len; i++) {
         printf("%02x", bytes[len - 1 - i]);
@@ -209,6 +304,15 @@ int main(int argc, char *argv[]) {
         int8_t *batch_noise = (int8_t*)malloc(BATCH_SIZE * IN_SIZE);
         uint8_t *batch_outputs = (uint8_t*)malloc(BATCH_SIZE * IN_SIZE);
         
+        if (!batch_nonces || !batch_noise || !batch_outputs) {
+            fprintf(stderr, "Failed to allocate batch buffers\n");
+            free(batch_nonces);
+            free(batch_noise);
+            free(batch_outputs);
+
+            return 1;
+        }
+        
         while (1) {
             // Generate batch of nonces and their noise vectors
             for (int i = 0; i < BATCH_SIZE; i++) {
@@ -260,6 +364,7 @@ int main(int argc, char *argv[]) {
                     free(batch_nonces);
                     free(batch_noise);
                     free(batch_outputs);
+            
                     return 0;
                 }
             }
@@ -287,6 +392,7 @@ int main(int argc, char *argv[]) {
         free(batch_nonces);
         free(batch_noise);
         free(batch_outputs);
+
     }
 
     return 0;
