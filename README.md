@@ -27,8 +27,8 @@ See [Proof of Work Design](tens_pow.md) for more details.
 
 ### Key Parameters
 - **Hidden Dimension:** 256
-- **Matrix Precision:** 8-bit integers  
-- **Arithmetic:** Modulo 256  
+- **Matrix Precision:** 1.58-bit integers (ternary weights)
+- **Arithmetic:** Modulo 2
 - **Rounds:** 64  
 - **Input/Output:** 32 bytes (same as Bitcoin)
 

@@ -15,8 +15,8 @@ Parameters:
 - Input/Output: 32 bytes
 - Hidden dimension: 256
 - Rounds: 64 
-- Arithmetic: Modulo 256
-- Matrix precision: 8-bit integers
+- Arithmetic: Modulo 2
+- Matrix precision: 1.58-bit integers (ternary weights)
 
 ### Implementation Phases
 
@@ -55,13 +55,14 @@ for (int i = 0; i < total_noise; i++) {
 
 The algorithm maps to standard tensor operations:
 - Matrix multiplication
-- 8-bit integer arithmetic
+- 1.58-bit integer arithmetic
 - Dense linear algebra
 - Regular memory access patterns
 
 Two reference implementations:
 1. `int8`: 8-bit integer matrix multiply
 2. `fp32`: 32-bit floating point operations
+2. `fp16`: 16-bit floating point operations
 
 ## ONNX Implementation
 
