@@ -7,7 +7,7 @@
 #include <inttypes.h>  // For PRIu64 macro
 
 #define IN_SIZE 32    // Input/output size
-#define OPS_PER_HASH (256*256*64+32*256*2)
+#define OPS_PER_HASH (32*256*2+256+(256*256*2+256)*64+256*32*2+256)
 
 // Declare the hash functions and structures
 typedef struct {

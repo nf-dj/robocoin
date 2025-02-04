@@ -13,7 +13,7 @@
 #define HIDDEN 256
 #define ROUNDS 64
 #define BATCH_SIZE 8192 // tested on m1
-#define OPS_PER_HASH (256*256*64+32*256*2)
+#define OPS_PER_HASH (32*256*2+256+(256*256*2+256)*64+256*32*2+256)
 
 @interface TensPowMetal : NSObject
 @property (nonatomic, strong) id<MTLDevice> device;
