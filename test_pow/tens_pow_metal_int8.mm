@@ -104,78 +104,79 @@
             return nil;
         }
         
-        // Generate raw random data for matrices
-        size_t raw_size = (HIDDEN * IN_SIZE) + (ROUNDS * HIDDEN * HIDDEN) + (IN_SIZE * HIDDEN);
-        uint8_t *raw_data = (uint8_t*)malloc(raw_size);
-        if (!raw_data) {
-            NSLog(@"Failed to allocate memory for raw matrices");
+        // Generate matrices using libsodium
+        NSLog(@"Starting matrix initialization...");
+        size_t total_size = (HIDDEN * IN_SIZE) + (ROUNDS * HIDDEN * HIDDEN) + (IN_SIZE * HIDDEN);
+        NSLog(@"Allocating %zu bytes for matrices", total_size);
+        
+        uint8_t *data = (uint8_t*)malloc(total_size);
+        if (!data) {
+            NSLog(@"Failed to allocate memory for matrices");
             return nil;
         }
+        NSLog(@"Successfully allocated memory for matrices");
         
-        // Generate using ChaCha20
+        NSLog(@"Generating matrices using ChaCha20...");
         unsigned char nonce[crypto_stream_chacha20_NONCEBYTES] = {0};
-        if (crypto_stream_chacha20(raw_data, raw_size, nonce, seed) != 0) {
+        if (crypto_stream_chacha20(data, total_size, nonce, seed) != 0) {
             NSLog(@"Failed to generate matrices with ChaCha20");
-            free(raw_data);
+            free(data);
             return nil;
         }
+        NSLog(@"Successfully generated matrices");
         
-        // Allocate float32 matrices
-        size_t float_size = ((HIDDEN * IN_SIZE) + (ROUNDS * HIDDEN * HIDDEN) + (IN_SIZE * HIDDEN)) * sizeof(float);
-        float *float_data = (float*)malloc(float_size);
-        if (!float_data) {
-            NSLog(@"Failed to allocate memory for float matrices");
-            free(raw_data);
+        // Check device limits
+        NSLog(@"Checking device buffer size limits...");
+        NSUInteger maxBufferLength = _device.maxBufferLength;
+        NSLog(@"Maximum buffer length: %lu bytes", (unsigned long)maxBufferLength);
+        
+        if (ROUNDS * HIDDEN * HIDDEN > maxBufferLength) {
+        NSLog(@"Middle matrices buffer size exceeds device limit");
+        free(data);
             return nil;
         }
-        
-        // Convert int8 to float32
-        size_t pos = 0;
-        for (size_t i = 0; i < raw_size; i++) {
-            float_data[i] = (float)((int8_t)raw_data[i]);
-        }
-        
-        free(raw_data);
-        
-        // Create Metal buffers for float32 matrices
-        pos = 0;
-        NSLog(@"Creating expansion matrix buffer (size: %d bytes)...", HIDDEN * IN_SIZE * sizeof(float));
-        _expandMatBuffer = [_device newBufferWithBytes:float_data + pos
-                                              length:HIDDEN * IN_SIZE * sizeof(float)
+
+        // Create Metal buffers
+        uint8_t *pos = data;
+        NSLog(@"Creating Metal buffers...");
+
+        NSLog(@"Creating expansion matrix buffer (size: %d bytes)...", HIDDEN * IN_SIZE);
+        _expandMatBuffer = [_device newBufferWithBytes:pos
+                                              length:HIDDEN * IN_SIZE
                                              options:MTLResourceStorageModeShared];
         if (!_expandMatBuffer) {
             NSLog(@"Failed to create expansion matrix buffer");
-            free(float_data);
+            free(data);
             return nil;
         }
         pos += HIDDEN * IN_SIZE;
         NSLog(@"Expansion matrix buffer created successfully");
 
         // Middle matrices
-        NSLog(@"Creating middle matrices buffer (size: %d bytes)...", ROUNDS * HIDDEN * HIDDEN * sizeof(float));
-        _middleMatBuffers = [_device newBufferWithBytes:float_data + pos
-                                               length:ROUNDS * HIDDEN * HIDDEN * sizeof(float)
+        NSLog(@"Creating middle matrices buffer (size: %d bytes)...", ROUNDS * HIDDEN * HIDDEN);
+        _middleMatBuffers = [_device newBufferWithBytes:pos
+                                               length:ROUNDS * HIDDEN * HIDDEN
                                               options:MTLResourceStorageModeShared];
         if (!_middleMatBuffers) {
             NSLog(@"Failed to create middle matrices buffer");
-            free(float_data);
+            free(data);
             return nil;
         }
         pos += ROUNDS * HIDDEN * HIDDEN;
         NSLog(@"Middle matrices buffer created successfully");
 
         // Compression matrix
-        NSLog(@"Creating compression matrix buffer (size: %d bytes)...", IN_SIZE * HIDDEN * sizeof(float));
-        _compressMatBuffer = [_device newBufferWithBytes:float_data + pos
-                                                length:IN_SIZE * HIDDEN * sizeof(float)
+        NSLog(@"Creating compression matrix buffer (size: %d bytes)...", IN_SIZE * HIDDEN);
+        _compressMatBuffer = [_device newBufferWithBytes:pos
+                                                length:IN_SIZE * HIDDEN
                                                options:MTLResourceStorageModeShared];
         if (!_compressMatBuffer) {
             NSLog(@"Failed to create compression matrix buffer");
-            free(float_data);
+            free(data);
             return nil;
         }
         
-        free(float_data);
+        free(data);
         NSLog(@"Matrix initialization completed successfully");
     }
     NSLog(@"TensPowMetal initialization completed");
@@ -346,8 +347,8 @@ int main(int argc, char *argv[]) {
                     best_zero_bits = zeros;
                 }
                 
-                //if (zeros >= difficulty) {
-                if (0) {
+                if (zeros >= difficulty) {
+                //if (0) {
                     time_t end_time = time(NULL);
                     double duration = difftime(end_time, start_time);
                     uint64_t total_attempts = attempts + i;
