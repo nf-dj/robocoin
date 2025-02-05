@@ -4,15 +4,16 @@ import time
 import argparse
 from hashlib import sha256
 from Crypto.Cipher import ChaCha20
+import numpy as np
 
 IN_SIZE = 32
 HIDDEN = 256
 ROUNDS = 64
 
 class TensHash(nn.Module):
-    def __init__(self, seed_hex, device="mps"):
+    def __init__(self, seed_hex, device="cpu"):
         super().__init__()
-        self.device = torch.device(device if torch.backends.mps.is_available() and device == "mps" else "cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device)
         self.seed = bytes.fromhex(seed_hex)
         
         # Generate matrices using ChaCha20
@@ -20,92 +21,100 @@ class TensHash(nn.Module):
         cipher = ChaCha20.new(key=self.seed, nonce=b'\0'*8)
         random_bytes = cipher.encrypt(b'\0' * total_size)
         
-        # Create and store matrices as nn.Parameters
-        self.matrices = nn.ParameterList([
-            nn.Parameter(
-                torch.tensor(
-                    [(random_bytes[r*HIDDEN*HIDDEN + i] % 3) - 1 for i in range(HIDDEN*HIDDEN)],
-                    dtype=torch.float32, device=self.device
-                ).reshape(HIDDEN, HIDDEN),
-                requires_grad=False
-            ) for r in range(ROUNDS)
-        ])
+        # Create and store matrices
+        self.matrices = nn.ParameterList()
+        for r in range(ROUNDS):
+            matrix = torch.zeros((HIDDEN, HIDDEN), dtype=torch.float32, device=self.device)
+            start_idx = r * HIDDEN * HIDDEN
+            for i in range(HIDDEN):
+                for j in range(HIDDEN):
+                    val = random_bytes[start_idx + i * HIDDEN + j] % 3
+                    matrix[i, j] = val - 1
+            self.matrices.append(nn.Parameter(matrix, requires_grad=False))
 
-    def bytes_to_bits_batched(self, nonces):
-        """Convert bytes to bit array in batches."""
-        batch_size = nonces.shape[0]
-        bits = torch.zeros((batch_size, HIDDEN), dtype=torch.float32, device=self.device)
-        nonces_cpu = nonces.cpu().numpy()
+    def generate_noise(self, nonce):
+        """Generate noise bits exactly like C implementation."""
+        hash_bytes = sha256(nonce.cpu().numpy().tobytes()).digest()
+        noise = np.zeros((ROUNDS * HIDDEN), dtype=np.float32)
         
-        for i in range(batch_size):
-            for byte_idx in range(IN_SIZE):
-                for bit_idx in range(8):
-                    bits[i, byte_idx * 8 + bit_idx] = (nonces_cpu[i, byte_idx] >> bit_idx) & 1
-        
-        return bits.to(torch.float32)
-
-    def generate_noise_batched(self, nonces):
-        """Generate noise from input in batches."""
-        batch_size = nonces.shape[0]
-        noise = torch.zeros((batch_size, ROUNDS, HIDDEN), dtype=torch.float32, device=self.device)
-        
-        # Process on CPU for SHA256
-        nonces_cpu = nonces.cpu().numpy()
-        for i in range(batch_size):
-            hash_bytes = sha256(nonces_cpu[i].tobytes()).digest()
-            for r in range(ROUNDS):
-                for h in range(HIDDEN):
-                    idx = (r * HIDDEN + h)
-                    byte_idx = idx % 32
-                    bit_idx = idx % 8
-                    noise[i, r, h] = (hash_bytes[byte_idx] >> bit_idx) & 1
-        
-        return noise.to(torch.float32)
+        for i in range(ROUNDS * HIDDEN):
+            byte_idx = i // 8  # Integer division like C
+            bit_idx = i % 8   # Exact C bit indexing
+            if byte_idx < 32:  # Stay within hash bounds
+                noise[i] = (hash_bytes[byte_idx] >> bit_idx) & 1
+            
+        return torch.from_numpy(noise).reshape(ROUNDS, HIDDEN).to(self.device)
 
     def forward(self, nonces):
-        """Process entire batch at once."""
         batch_size = nonces.shape[0]
+        x = torch.zeros((batch_size, HIDDEN), dtype=torch.float32, device=self.device)
         
-        # Convert input to bits and generate noise (only byte/bit ops)
-        x = self.bytes_to_bits_batched(nonces)
-        noise = self.generate_noise_batched(nonces)
+        # Convert bytes to bits like C
+        nonces_cpu = nonces.cpu().numpy()
+        for batch in range(batch_size):
+            for i in range(IN_SIZE):
+                for j in range(8):
+                    x[batch, i*8 + j] = (nonces_cpu[batch, i] >> j) & 1
         
-        # All operations in FP32
+        # Generate noise for each nonce
+        noise = torch.zeros((batch_size, ROUNDS, HIDDEN), dtype=torch.float32, device=self.device)
+        for batch in range(batch_size):
+            noise[batch] = self.generate_noise(nonces[batch])
+        
+        # Apply rounds
         for r in range(ROUNDS):
-            x = torch.fmod(
-                torch.matmul(x, self.matrices[r].T) + noise[:, r],
-                2.0
-            )
+            # Matrix multiplication like C: Ax
+            matmul = torch.matmul(self.matrices[r], x.T).T
+            # Add noise and mod 2 like C
+            x = torch.fmod(matmul + noise[:, r], 2.0)
             
         return x
 
-def count_leading_zeros_fast(bits):
-    """Optimized leading zeros counting directly on GPU."""
-    # Threshold and convert to binary (0/1)
-    bits = (bits > 0.5).float()
+def bits_to_bytes_batched(bits):
+    batch_size = bits.shape[0]
+    bytes_out = torch.zeros((batch_size, IN_SIZE), dtype=torch.uint8, device=bits.device)
+    bits = (bits > 0.5)
     
-    # Get the position of the first 1 in each row
-    # We want to find the last 1 when bits are in normal order, so we flip the order
-    flipped_bits = torch.flip(bits, [1])
-    first_one = torch.argmax(flipped_bits, dim=1)
+    # Convert bits to bytes like C
+    for i in range(batch_size):
+        for byte_idx in range(IN_SIZE):
+            byte = 0
+            for bit_idx in range(8):
+                if bits[i, byte_idx * 8 + bit_idx]:
+                    byte |= 1 << bit_idx
+            bytes_out[i, byte_idx] = byte
+    return bytes_out
+
+def count_leading_zeros_batched(bits):
+    batch_size = bits.shape[0]
+    leading_zeros = torch.zeros(batch_size, dtype=torch.int32, device=bits.device)
+    bits_cpu = bits.cpu()
     
-    # Convert to leading zeros count
-    leading_zeros = HIDDEN - first_one - 1
-    
-    # Handle case where all bits are zero
-    all_zeros = (bits.sum(dim=1) == 0)
-    leading_zeros[all_zeros] = HIDDEN
-    
-    return leading_zeros.int()
+    # Count leading zeros like C
+    for i in range(batch_size):
+        zeros = 0
+        found_one = False
+        for byte_idx in range(IN_SIZE-1, -1, -1):
+            for bit_idx in range(7, -1, -1):
+                idx = byte_idx * 8 + bit_idx
+                if bits_cpu[i, idx] > 0.5:
+                    found_one = True
+                    leading_zeros[i] = zeros
+                    break
+                zeros += 1
+            if found_one:
+                break
+        if not found_one:
+            leading_zeros[i] = HIDDEN
+    return leading_zeros
 
 class TensPoW:
-    def __init__(self, seed_hex, difficulty, device="mps"):
+    def __init__(self, seed_hex, difficulty, device="cpu"):
         self.device = device
         self.model = TensHash(seed_hex, device).to(device)
         self.difficulty = difficulty
         
     def mine(self, batch_size=1024):
-        """Mine for valid nonce using batched operations."""
         counter = 0
         start_time = time.time()
         last_report_time = start_time
@@ -121,21 +130,21 @@ class TensPoW:
         print("  ----    ---------    --------      ------------    ----------")
         
         try:
-            nonces = torch.zeros((batch_size, IN_SIZE), dtype=torch.uint8, device=self.model.device)
+            nonces = torch.zeros((batch_size, IN_SIZE), dtype=torch.uint8, device=self.device)
             
             while True:
                 # Set nonces for this batch
                 for i in range(batch_size):
                     nonce = counter + i
                     for byte_idx in range(8):
-                        nonces[i, byte_idx] = (nonce >> (byte_idx * 8)) & 0xFF
-                
+                        nonces[i, byte_idx] = (nonce >> (8 * byte_idx)) & 0xFF
+
                 # Run hash in batches
                 with torch.no_grad():
                     output_bits = self.model(nonces)
                 
-                # Check results directly on bits
-                zeros = count_leading_zeros_fast(output_bits)
+                # Check results
+                zeros = count_leading_zeros_batched(output_bits)
                 max_zeros = zeros.max().item()
                 best_zeros = max(best_zeros, max_zeros)
                 
@@ -143,12 +152,14 @@ class TensPoW:
                 if max_zeros >= self.difficulty:
                     success_idx = (zeros >= self.difficulty).nonzero()[0][0].item()
                     winning_nonce = nonces[success_idx]
+                    output_bytes = bits_to_bytes_batched(output_bits)[success_idx]
                     
                     print("\nSolution found!")
                     print(f"Nonce: {winning_nonce.cpu().numpy().tobytes().hex()}")
+                    print(f"Hash: {output_bytes.cpu().numpy().tobytes().hex()}")
                     
                     total_time = time.time() - start_time
-                    hash_rate = total_hashes / total_time
+                    hash_rate = total_hashes / total_time if total_time > 0 else 0
                     tops = (hash_rate * HIDDEN * HIDDEN * 2 * ROUNDS) / 1e12
                     
                     print(f"\nStats:")
@@ -179,7 +190,8 @@ def main():
     parser = argparse.ArgumentParser(description='TensPoW PyTorch Miner')
     parser.add_argument('seed', help='64-character hex seed')
     parser.add_argument('difficulty', type=int, help='Required number of leading zero bits')
-    parser.add_argument('--device', default='mps', help='Device to use (mps/cuda/cpu)')
+    parser.add_argument('--device', default='cpu', help='Device to use (mps/cuda/cpu)')
+    parser.add_argument('--batch-size', type=int, default=1024, help='Batch size (default: 1024)')
     args = parser.parse_args()
     
     if len(args.seed) != 64:
@@ -188,7 +200,7 @@ def main():
         parser.error("Difficulty must be between 1 and 256")
     
     miner = TensPoW(args.seed, args.difficulty, args.device)
-    miner.mine()
+    miner.mine(batch_size=args.batch_size)
 
 if __name__ == "__main__":
     main()

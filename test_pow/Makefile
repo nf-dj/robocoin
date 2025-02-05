@@ -32,6 +32,9 @@ check_metal: check_metal.mm
 tens_hash: tens_hash.c
 	$(CC) $(CFLAGS) -DHASH_MAIN -o $@ $< $(LDFLAGS)
 
+debug_hash: debug_hash.c
+	$(CC) $(CFLAGS) -DHASH_MAIN -o $@ $< $(LDFLAGS)
+
 tens_pow: tens_pow.c tens_hash.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
