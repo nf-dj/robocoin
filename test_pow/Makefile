@@ -32,14 +32,14 @@ check_metal: check_metal.mm
 tens_hash: tens_hash.c
 	$(CC) $(CFLAGS) -DHASH_MAIN -o $@ $< $(LDFLAGS)
 
-debug_hash: debug_hash.c
-	$(CC) $(CFLAGS) -DHASH_MAIN -o $@ $< $(LDFLAGS)
-
 tens_pow: tens_pow.c tens_hash.c
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 tens_pow_metal_int8: tens_pow_metal_int8.mm
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+libnoise.so: noise_gen.c
+	gcc -O3 -shared -fPIC -o libnoise.so noise_gen.c -lsodium $(CFLAGS) $(LDFLAGS)
 
 default.metallib: tens_pow_metal_int8.metal
 	$(METAL_PATH) -c tens_pow_metal_int8.metal -o tens_pow_metal_int8.air
