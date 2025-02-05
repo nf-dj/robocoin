@@ -62,6 +62,10 @@ class RPCClient:
         """Get block template for mining."""
         return self._call('getblocktemplate', [{"rules": ["segwit"]}])
         
+    def getnewaddress(self) -> str:
+        """Generate a new TensCoin address."""
+        return self._call('getnewaddress')
+
     def submit_block(self, block_hex: str) -> bool:
         """Submit solved block."""
         try:

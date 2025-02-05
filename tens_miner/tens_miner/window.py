@@ -5,12 +5,13 @@ import math
 import torch
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                            QLabel, QLineEdit, QPushButton, QComboBox,
-                           QTextEdit, QFrame, QGridLayout)
+                           QTextEdit, QFrame, QGridLayout, QMessageBox)
 from PyQt6.QtCore import Qt
 from .worker import MiningWorker
 from .mining import BATCH_SIZE, OPS_PER_HASH
 from .utils import print_hex_le
 from .network import RPCClient
+from .wallet import generate_keypair, save_keys, load_wallet
 
 def format_time_estimate(seconds):
     """Format estimated time in a human readable way."""
@@ -54,6 +55,22 @@ class MainWindow(QMainWindow):
         node_layout.addWidget(node_label)
         node_layout.addWidget(self.node_input)
         param_layout.addLayout(node_layout)
+        
+        # Mining address
+        address_layout = QHBoxLayout()
+        address_label = QLabel("Mining Address:")
+        self.address_input = QLineEdit()
+        self.generate_address_button = QPushButton("Generate New")
+        self.generate_address_button.clicked.connect(self.generate_new_address)
+        address_layout.addWidget(address_label)
+        address_layout.addWidget(self.address_input)
+        address_layout.addWidget(self.generate_address_button)
+        param_layout.addLayout(address_layout)
+        
+        # Load any existing address
+        wallet = load_wallet()
+        if wallet:
+            self.address_input.setText(wallet[-1]['address'])
         
         # Batch size input
         batch_layout = QHBoxLayout()
@@ -121,6 +138,10 @@ class MainWindow(QMainWindow):
         self.status_text.setMaximumHeight(150)
         layout.addWidget(self.status_text)
         
+        # Add status message for loaded address
+        if wallet and len(wallet) > 0:
+            self.status_text.append(f"Loaded saved address: {wallet[-1]['address']}")
+        
         # Window setup
         self.setMinimumWidth(600)
         self.setMinimumHeight(400)
@@ -133,6 +154,31 @@ class MainWindow(QMainWindow):
         else:
             self.device_combo.setCurrentText("cpu")
     
+    def generate_new_address(self):
+        """Generate a new TensCoin address locally."""
+        try:
+            # Generate new keypair
+            private_key, address = generate_keypair()
+            
+            # Save to wallet file
+            wallet_path = save_keys(private_key, address)
+            
+            # Update UI
+            self.address_input.setText(address)
+            self.status_text.append(f"Generated new address: {address}")
+            self.status_text.append(f"Private key saved to: {wallet_path}")
+            
+            # Show warning about backing up private key
+            QMessageBox.warning(
+                self,
+                "Backup Warning",
+                f"Private key saved to {wallet_path}\n\n" \
+                "Please back up this file! If you lose it, you will lose access to any mined coins."
+            )
+            
+        except Exception as e:
+            self.status_text.append(f"Failed to generate address: {e}")
+    
     def start_mining(self):
         # Parse node address
         node_addr = self.node_input.text().strip()
@@ -143,6 +189,12 @@ class MainWindow(QMainWindow):
             self.status_text.append("Error: Invalid node address (use format host:port)")
             return
         
+        # Validate mining address
+        address = self.address_input.text().strip()
+        if not address:
+            self.status_text.append("Error: Mining address required")
+            return
+            
         try:
             batch_size = int(self.batch_input.text())
             if batch_size < 1:
@@ -176,6 +228,7 @@ class MainWindow(QMainWindow):
             self.target_label.setText(f"Target: {target_bits} zeros")
             self.status_text.append(f"Connected successfully. Need {target_bits} leading zeros")
             self.status_text.append(f"Target: {target}")
+            self.status_text.append(f"Mining to address: {address}")
             print(f"Full mining info:", json.dumps(mining_info, indent=2))
         except Exception as e:
             self.status_text.append(f"Failed to connect to node: {e}")
@@ -187,9 +240,11 @@ class MainWindow(QMainWindow):
         self.node_input.setEnabled(False)
         self.batch_input.setEnabled(False)
         self.device_combo.setEnabled(False)
+        self.address_input.setEnabled(False)
+        self.generate_address_button.setEnabled(False)
         
-        # Start mining thread with RPC client
-        self.worker = MiningWorker(self.rpc, batch_size, device)
+        # Start mining thread
+        self.worker = MiningWorker(self.rpc, batch_size, device, address)
         self.worker.progress.connect(self.update_progress)
         self.worker.solution.connect(self.solution_found)
         self.worker.status.connect(self.status_update)
@@ -207,6 +262,8 @@ class MainWindow(QMainWindow):
         self.node_input.setEnabled(True)
         self.batch_input.setEnabled(True)
         self.device_combo.setEnabled(True)
+        self.address_input.setEnabled(True)
+        self.generate_address_button.setEnabled(True)
         
         self.status_text.append("Mining stopped.")
     
@@ -236,10 +293,10 @@ class MainWindow(QMainWindow):
         self.total_label.setText(f"Total Hashes: {attempts:,}")
         self.best_label.setText(f"Best: {best_bits} bits")
         
-        # Update time estimate - use 24 as default if target not set
+        # Update time estimate
         target_text = self.target_label.text()
         try:
-            target_bits = int(target_text.split()[1])  # Extract number from "Target: X zeros"
+            target_bits = int(target_text.split()[1])
         except:
             target_bits = 24
         self.update_estimate(hash_rate, target_bits)

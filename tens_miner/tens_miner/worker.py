@@ -7,6 +7,7 @@ import hashlib
 from PyQt6.QtCore import QThread, pyqtSignal
 from .mining import TensCoinMiner, nonces_from_counter  # Updated import
 from .utils import count_leading_zero_bits
+from .transactions import create_coinbase_tx, hash_tx, calc_merkle_root
 
 def hex_string_to_bytes(hex_str):
     """Convert a hex string to bytes."""
@@ -25,11 +26,12 @@ class MiningWorker(QThread):
     solution = pyqtSignal(dict)
     status = pyqtSignal(str)
     
-    def __init__(self, rpc_client, batch_size, device):
+    def __init__(self, rpc_client, batch_size, device, mining_address):
         super().__init__()
         self.rpc = rpc_client
         self.batch_size = batch_size
         self.device = device
+        self.mining_address = mining_address
         self.should_stop = False
         
         self.attempts = 0
@@ -41,17 +43,32 @@ class MiningWorker(QThread):
     
     def build_block_header(self, template):
         """Build block header from template fields."""
+        # Create coinbase transaction
+        coinbase_tx = create_coinbase_tx(
+            address=self.mining_address,
+            height=template['height'],
+            value=template.get('coinbasevalue', 5000000000)
+        )
+        
+        # Calculate merkle root
+        tx_hashes = [hash_tx(coinbase_tx)]
+        for tx in template.get('transactions', []):
+            if 'hash' in tx:
+                tx_hashes.append(bytes.fromhex(tx['hash'])[::-1])
+        merkle_root = calc_merkle_root(tx_hashes)
+        
+        # Store coinbase for block assembly
+        self.current_coinbase = coinbase_tx
+        self.current_merkle_root = merkle_root
+        
         # Convert version to 4-byte little-endian
         version = template['version'].to_bytes(4, 'little').hex()
         
         # Previous block hash (needs to be reversed)
         prev_hash = reverse_bytes(hex_string_to_bytes(template['previousblockhash'])).hex()
         
-        # Default merkle root if not provided
-        if 'merkleroot' in template:
-            merkle_root = reverse_bytes(hex_string_to_bytes(template['merkleroot'])).hex()
-        else:
-            merkle_root = '0' * 64
+        # Use our calculated merkle root
+        merkle_root_hex = merkle_root[::-1].hex()
         
         # Time as 4-byte little-endian
         time = template['curtime'].to_bytes(4, 'little').hex()
@@ -60,7 +77,7 @@ class MiningWorker(QThread):
         bits = template['bits']
         
         # Combine all fields
-        header = version + prev_hash + merkle_root + time + bits
+        header = version + prev_hash + merkle_root_hex + time + bits
         return header
         
     def run(self):
@@ -96,18 +113,18 @@ class MiningWorker(QThread):
             attempts = 0
             
             while not self.should_stop:
-                # Periodically check for new block template
-                if attempts % (self.batch_size * 100) == 0:
-                    new_template = self.rpc.get_block_template()
-                    if new_template and new_template.get('previousblockhash') != template.get('previousblockhash'):
-                        # New block to mine on
+                # Check for new blocks before each batch
+                new_template = self.rpc.get_block_template()
+                if new_template:
+                    if new_template.get('previousblockhash') != template.get('previousblockhash'):
+                        # New block found - update everything
                         template = new_template
                         header_base = self.build_block_header(template)
                         header_bytes = hex_string_to_bytes(header_base)
                         seed = double_sha256(header_bytes).hex()
-                        miner = TensCoinMiner(seed, self.device)  # Updated class name
+                        miner = TensCoinMiner(seed, self.device)
                         miner.eval()
-                        self.status.emit(f"Got new block template - version: {template['version']}, bits: {template['bits']}")
+                        self.status.emit(f"New block detected: {template['previousblockhash']}")
                 
                 nonce_batch = nonces_from_counter(attempts, self.batch_size)
                 attempts += self.batch_size
@@ -134,15 +151,17 @@ class MiningWorker(QThread):
                     if zeros >= mining_info.get('target_bits', 24):  # Default to 24 if not specified
                         nonce_bytes = bytes(nonce_batch_cpu[i].tolist())[::-1]
                         
-                        # Build block with our nonce
-                        block = header_base + nonce_bytes.hex()
-                        # Add coinbase and other transactions
+                        # Build full block with our nonce
+                        block_hex = header_base + nonce_bytes.hex()
+                        
+                        # Add transactions starting with our coinbase
+                        block_hex += self.current_coinbase.hex()
                         for tx in template.get('transactions', []):
                             if 'data' in tx:
-                                block += tx['data']
+                                block_hex += tx['data']
                         
                         # Submit solution
-                        success = self.rpc.submit_block(block)
+                        success = self.rpc.submit_block(block_hex)
                         
                         if success:
                             self.solution.emit({
