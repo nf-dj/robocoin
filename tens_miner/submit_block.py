@@ -22,8 +22,9 @@ def submit_block():
     prev_hash = bytes.fromhex("f4cd8ace00dba8218a505042833b3caf878a039c9faa146bc3d7d6663b28e00e")[::-1]  # 32 bytes, internal byte order
     merkle_root = bytes.fromhex("8b750b0ea546d17094fea737299e54d9df30ff5e7ccd641fdba399812f85a652")[::-1]  # 32 bytes, internal byte order
     timestamp = struct.pack("<I", 1738830846)  # 4 bytes, little-endian
-    bits = bytes.fromhex("1e00ffff")  # 4 bytes
-    pow_nonce = bytes.fromhex("bd752200")  # 4 bytes, little-endian
+    #bits = bytes.fromhex("1e00ffff")  # 4 bytes, little endian
+    bits = bytes.fromhex("ffff001e")  # 4 bytes, little endian
+    pow_nonce = bytes.fromhex("d0cd6400") # 4 bytes, little-endian (big endian is 64cdd0)
     
     # For seed: same header but with nonce=0
     zero_nonce = bytes(4)
@@ -37,7 +38,7 @@ def submit_block():
     
     # Calculate seed (block hash with nonce=0)
     seed = double_sha256(header_for_seed).hex()
-    pow_seed = "93037c6b32d9ca06fa1ce7c03ab660216f374520fe6bb1cdac762807c4cdab3f"
+    pow_seed = "3fabcdc4072876accdb16bfe2045376f2160b63ac0e71cfa06cad9326b7c0393"
     
     print("Header Components:")
     print(f"Version:     {version.hex()}")
