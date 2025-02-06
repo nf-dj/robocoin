@@ -1,2 +1,6 @@
-ecdsa>=0.16.0
-base58>=2.1.0
+torch
+numpy
+PyQt6
+pycryptodome
+python-ecdsa
+pyinstaller

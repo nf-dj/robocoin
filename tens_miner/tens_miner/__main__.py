@@ -2,7 +2,7 @@
 
 import sys
 from PyQt6.QtWidgets import QApplication
-from .ui import MainWindow
+from tens_miner.ui import MainWindow  # Use absolute import
 
 def main():
     app = QApplication(sys.argv)
