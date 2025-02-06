@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 #include <sodium.h>
 
 #define IN_SIZE 32
@@ -26,14 +27,20 @@ typedef struct {
 } HashBuffers;
 
 static void matrix_multiply_mod2_int8(int8_t **A, uint8_t *in, uint8_t *out, int8_t *noise, int rows, int cols) {
+    //printf("sums: ");
     for (int i = 0; i < rows; i++) {
-        int8_t sum = 0;
+        int32_t sum = 0;
         for (int j = 0; j < cols; j++) {
-            sum += A[i][j] * in[j];
+            int8_t w=A[i][j];
+            //int8_t w=rand()%3-1;
+            sum += w * in[j];
         }
         sum += noise[i];
-        out[i] = sum & 1;
+        //out[i] = sum & 1;
+        //printf("%d ",sum);
+        out[i] = sum > 0 ? 1 : 0;
     }
+    //printf("\n");
 }
 
 static void matrix_multiply_mod2_fp32(int8_t **A, uint8_t *in, uint8_t *out, int8_t *noise, int rows, int cols) {
@@ -176,7 +183,8 @@ void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices
     unsigned char digest[crypto_hash_sha256_BYTES];
     crypto_hash_sha256(digest, input, IN_SIZE);
     for (size_t i = 0; i < ROUNDS * HIDDEN; i++) {
-        buffers->noise[i] = (digest[i % 32] >> (i % 8)) & 1;
+        //buffers->noise[i] = (digest[i % 32] >> (i % 8)) & 1;
+        buffers->noise[i] = rand() % 3 - 1; // FIXME
     }
 
     // Convert byte input to bits
@@ -186,7 +194,12 @@ void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices
         }
     }
 
-    for (uint32_t round = 0; round < ROUNDS; round++) {
+    uint32_t round;
+    for (round = 0; round < ROUNDS; round++) {
+        /*printf("round %d: ",round);
+        for (int i = 0; i < HIDDEN; i++)
+            printf("%02x", buffers->state[HIDDEN-1-i]);
+        printf("\n");*/
         matrix_multiply_mod2(matrices->middle_mats[round], buffers->state, 
                            buffers->next_state, buffers->noise + (round * HIDDEN), 
                            HIDDEN, HIDDEN, matrices->impl_type);
@@ -194,6 +207,10 @@ void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices
         buffers->state = buffers->next_state;
         buffers->next_state = temp;
     }
+    /*printf("round %d: ",round);
+    for (int i = 0; i < HIDDEN; i++)
+        printf("%02x", buffers->state[HIDDEN-1-i]);
+    printf("\n");*/
 
     // Convert bits back to bytes for output
     memset(output, 0, IN_SIZE);
@@ -241,6 +258,8 @@ int parse_hex(const char *hex, size_t hex_len, uint8_t *out, size_t out_len) {
 
 #ifdef HASH_MAIN
 int main(int argc, char *argv[]) {
+    srand(time(NULL));
+
     if (sodium_init() < 0) {
         fprintf(stderr, "Error: libsodium initialization failed\n");
         return 1;
