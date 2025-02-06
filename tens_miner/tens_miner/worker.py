@@ -102,7 +102,10 @@ class MiningWorker(QThread):
             # Build initial header and create miner
             header_base = self.build_block_header(template)
             header_bytes = hex_string_to_bytes(header_base)
-            seed = double_sha256(header_bytes).hex()
+            # Add zero nonce for seed calculation
+            header_with_zero_nonce = header_bytes + bytes(4)  # 4 bytes of zeros for nonce
+            seed = double_sha256(header_with_zero_nonce).hex()
+            self.status.emit(f"Computing PoW with seed (header hash with nonce=0): {seed}")
             bits = template.get('bits')
             self.status.emit(f"Got block template - version: {template['version']}, bits: {bits}")
             
@@ -140,14 +143,25 @@ class MiningWorker(QThread):
                             'elapsed_time': time.time() - self.start_time
                         })
                     
-                    if zeros >= mining_info.get('target_bits', 24):
+                    # Calculate target from bits
+                    bits_value = template['bits']
+                    target_bytes = bytes.fromhex(bits_value[2:] + '00' * (int(bits_value[:2], 16) - 3))
+                    target_int = int.from_bytes(target_bytes, 'big')
+                    hash_int = int.from_bytes(hash_result, 'big')
+                    
+
+                    if hash_int <= target_int:
                         nonce_bytes = bytes(nonce_batch_cpu[i].tolist())[::-1]
                         block_hex = header_base + nonce_bytes.hex()
-                        block_hex += self.current_coinbase.hex()
+
+                        coinbase_hex = self.current_coinbase.hex()
+                        block_hex += coinbase_hex
                         for tx in template.get('transactions', []):
                             if 'data' in tx:
                                 block_hex += tx['data']
                         
+                        # Only log when actually submitting
+                        self.status.emit(f"Found potential solution:\nHash: {hash_result.hex()}\nTarget: {target_bytes.hex()}\nNonce: {nonce_bytes.hex()}\nFull block hex: {block_hex}")
                         success = self.rpc.submit_block(block_hex)
                         if success:
                             self.solution.emit({
@@ -167,7 +181,7 @@ class MiningWorker(QThread):
                                 miner.eval()
                                 self.status.emit(f"Got new block template - bits: {template['bits']}")
                         else:
-                            self.status.emit("Block rejected by node")
+                            self.status.emit(f"Block rejected by node - Hash: {hash_result.hex()}\nTarget: {target_bytes.hex()}")
                 
                 # Periodic progress updates
                 if attempts % (self.batch_size * 10) == 0:
@@ -183,7 +197,9 @@ class MiningWorker(QThread):
                     template = new_template
                     header_base = self.build_block_header(template)
                     header_bytes = hex_string_to_bytes(header_base)
-                    seed = double_sha256(header_bytes).hex()
+                    header_with_zero_nonce = header_bytes + bytes(4)  # 4 bytes of zeros for nonce
+                    seed = double_sha256(header_with_zero_nonce).hex()
+                    self.status.emit(f"New block - computing PoW with seed: {seed}")
                     miner = TensHashCore(seed, self.device, self.batch_size)
                     miner.eval()
                     self.status.emit(f"New block detected: {template['previousblockhash']}")
