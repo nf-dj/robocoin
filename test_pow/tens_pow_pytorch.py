@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-import argparse, time, struct, sys, threading
-from hashlib import sha256
+import argparse, time, struct, sys, threading, ctypes
 import numpy as np
 import torch
 import torch.nn as nn
@@ -21,6 +20,28 @@ progress_data = {
     "stop": False
 }
 
+class NoiseGenerator:
+    def __init__(self, batch_size):
+        self.libnoise = ctypes.CDLL("./libnoise.so")
+        self.libnoise.compute_noise_batch.argtypes = [
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int
+        ]
+        self.libnoise.compute_noise_batch.restype = None
+
+        self.batch_size = batch_size
+        self.noise_buffer = np.zeros((batch_size, HIDDEN), dtype=np.float32)
+        self.noise_buffer_torch = torch.zeros((batch_size, HIDDEN), dtype=torch.float32)
+        self.noise_ptr = self.noise_buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+
+    def generate(self, nonces_np, device):
+        nonces_flat = nonces_np.flatten()
+        nonces_ptr = nonces_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+        self.libnoise.compute_noise_batch(nonces_ptr, self.noise_ptr, self.batch_size)
+        self.noise_buffer_torch.copy_(torch.from_numpy(self.noise_buffer))
+        return self.noise_buffer_torch.to(device)
+
 def count_leading_zero_bits(hash_bytes):
     count = 0
     for byte in hash_bytes:
@@ -36,19 +57,6 @@ def count_leading_zero_bits(hash_bytes):
 def print_hex(hash_bytes):
     return "".join("{:02x}".format(b) for b in hash_bytes)
 
-def generate_noise_batch(nonces):
-    B = nonces.shape[0]
-    noise = np.zeros((B, ROUNDS * HIDDEN), dtype=np.float32)
-    nonces_bytes = [bytes(n.tolist()) for n in nonces]
-    
-    for b, nonce in enumerate(nonces_bytes):
-        input_hash = sha256(nonce).digest()
-        for i in range(ROUNDS * HIDDEN):
-            byte_idx = i % 32
-            bit_idx = i % 8
-            noise[b, i] = float((input_hash[byte_idx] >> bit_idx) & 1)
-    return noise.reshape(B, ROUNDS, HIDDEN)
-
 def nonces_from_counter(start, count):
     nonces = []
     for counter in range(start, start + count):
@@ -58,10 +66,12 @@ def nonces_from_counter(start, count):
     return torch.tensor(list(nonces), dtype=torch.uint8)
 
 class TensHashMiner(nn.Module):
-    def __init__(self, seed_hex, device):
+    def __init__(self, seed_hex, device, batch_size):
         super().__init__()
         self.device = torch.device(device)
         self.seed = bytes.fromhex(seed_hex)[::-1]
+        
+        self.noise_gen = NoiseGenerator(batch_size)
         
         total_size = ROUNDS * HIDDEN * HIDDEN
         cipher = ChaCha20.new(key=self.seed, nonce=b'\0' * 8)
@@ -74,13 +84,16 @@ class TensHashMiner(nn.Module):
             dtype=torch.float32, device=self.device
         ).reshape(ROUNDS, HIDDEN, HIDDEN)
         
+        self.state = torch.zeros((batch_size, BITS), dtype=torch.float32, device=device)
+        
     def bytes_to_bits(self, inp):
         inp_cpu = inp.cpu().numpy()
         bits_np = np.unpackbits(inp_cpu, axis=1)
         bits_np = bits_np.reshape(-1, IN_SIZE, 8)
         bits_np = np.flip(bits_np, axis=2)
         bits_np = bits_np.reshape(-1, BITS).astype(np.float32)
-        return torch.from_numpy(bits_np).to(self.device)
+        self.state.copy_(torch.from_numpy(bits_np))
+        return self.state
     
     def bits_to_bytes(self, bits):
         B = bits.shape[0]
@@ -92,20 +105,16 @@ class TensHashMiner(nn.Module):
         return torch.from_numpy(packed_np).to(self.device)
     
     def forward_batch(self, nonce_batch):
-        B = nonce_batch.shape[0]
         state = self.bytes_to_bits(nonce_batch.to(self.device))
         
-        # Noise generation
         noise_start = time.time()
         nonce_np = nonce_batch.cpu().numpy()
-        noise_np = generate_noise_batch(nonce_np)  # shape: (B, ROUNDS, HIDDEN)
-        noise_tensor = torch.from_numpy(noise_np).to(self.device)
+        noise_tensor = self.noise_gen.generate(nonce_np, self.device)
         noise_time = time.time() - noise_start
         
-        # Matrix multiplications
         inference_start = time.time()
         for r in range(ROUNDS):
-            state = torch.matmul(state, self.matrices[r].t()) + noise_tensor[:, r]
+            state = torch.matmul(state, self.matrices[r].t()) + noise_tensor
             state = torch.remainder(torch.floor(state), 2.0)
         inference_time = time.time() - inference_start
         
@@ -154,7 +163,7 @@ def main():
     print("  Seed:", args.seed)
     print("  Difficulty: {} leading 0 bits".format(args.difficulty))
     
-    miner = TensHashMiner(args.seed, device)
+    miner = TensHashMiner(args.seed, device, args.batch_size)
     miner.eval()
     
     progress_thread = threading.Thread(target=progress_printer, daemon=True)
