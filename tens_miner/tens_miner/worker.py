@@ -5,7 +5,7 @@ import torch
 import binascii
 import hashlib
 from PyQt6.QtCore import QThread, pyqtSignal
-from .mining import TensCoinMiner, nonces_from_counter  # Updated import
+from .mining import TensHashCore, nonces_from_counter, BATCH_SIZE
 from .utils import count_leading_zero_bits
 from .transactions import create_coinbase_tx, hash_tx, calc_merkle_root
 
@@ -37,6 +37,10 @@ class MiningWorker(QThread):
         self.attempts = 0
         self.best_zero_bits = 0
         self.start_time = None
+        
+        # Flag for new block check
+        self.last_block_check = 0
+        self.BLOCK_CHECK_INTERVAL = 10  # Check every 10 seconds
     
     def stop(self):
         self.should_stop = True
@@ -63,22 +67,24 @@ class MiningWorker(QThread):
         
         # Convert version to 4-byte little-endian
         version = template['version'].to_bytes(4, 'little').hex()
-        
-        # Previous block hash (needs to be reversed)
         prev_hash = reverse_bytes(hex_string_to_bytes(template['previousblockhash'])).hex()
-        
-        # Use our calculated merkle root
         merkle_root_hex = merkle_root[::-1].hex()
-        
-        # Time as 4-byte little-endian
         time = template['curtime'].to_bytes(4, 'little').hex()
-        
-        # Bits (already in correct format)
         bits = template['bits']
         
         # Combine all fields
         header = version + prev_hash + merkle_root_hex + time + bits
         return header
+        
+    def check_new_block(self, template):
+        """Check for new blocks periodically."""
+        now = time.time()
+        if now - self.last_block_check >= self.BLOCK_CHECK_INTERVAL:
+            self.last_block_check = now
+            new_template = self.rpc.get_block_template()
+            if new_template and new_template.get('previousblockhash') != template.get('previousblockhash'):
+                return new_template
+        return None
         
     def run(self):
         try:
@@ -93,49 +99,35 @@ class MiningWorker(QThread):
                 self.status.emit("Failed to get block template from node")
                 return
             
-            # Build initial header
+            # Build initial header and create miner
             header_base = self.build_block_header(template)
-            print(f"Initial header: {header_base}")  # Debug print
-            print(f"Header length: {len(header_base)//2} bytes")  # Should be 76 bytes without nonce
-            
-            # Hash header to get 32-byte seed for miner
             header_bytes = hex_string_to_bytes(header_base)
             seed = double_sha256(header_bytes).hex()
-            print(f"Seed for mining: {seed}")  # Should be 32 bytes
-            
             bits = template.get('bits')
             self.status.emit(f"Got block template - version: {template['version']}, bits: {bits}")
-                
+            
             # Initialize miner with seed
-            miner = TensCoinMiner(seed, self.device)  # Updated class name
+            miner = TensHashCore(seed, self.device, self.batch_size)
             miner.eval()
             self.start_time = time.time()
             attempts = 0
             
+            # Main mining loop
             while not self.should_stop:
-                # Check for new blocks before each batch
-                new_template = self.rpc.get_block_template()
-                if new_template:
-                    if new_template.get('previousblockhash') != template.get('previousblockhash'):
-                        # New block found - update everything
-                        template = new_template
-                        header_base = self.build_block_header(template)
-                        header_bytes = hex_string_to_bytes(header_base)
-                        seed = double_sha256(header_bytes).hex()
-                        miner = TensCoinMiner(seed, self.device)
-                        miner.eval()
-                        self.status.emit(f"New block detected: {template['previousblockhash']}")
-                
+                # Generate nonces for this batch
                 nonce_batch = nonces_from_counter(attempts, self.batch_size)
                 attempts += self.batch_size
                 self.attempts = attempts
                 
+                # Run mining computation with no_grad
                 with torch.no_grad():
                     out_batch = miner.forward_batch(nonce_batch)
                 
+                # Process results
                 out_batch_cpu = out_batch.cpu().numpy()
                 nonce_batch_cpu = nonce_batch.cpu().numpy()
                 
+                # Check results
                 for i in range(self.batch_size):
                     hash_result = bytes(out_batch_cpu[i].tolist())[::-1]
                     zeros = count_leading_zero_bits(hash_result)
@@ -148,21 +140,15 @@ class MiningWorker(QThread):
                             'elapsed_time': time.time() - self.start_time
                         })
                     
-                    if zeros >= mining_info.get('target_bits', 24):  # Default to 24 if not specified
+                    if zeros >= mining_info.get('target_bits', 24):
                         nonce_bytes = bytes(nonce_batch_cpu[i].tolist())[::-1]
-                        
-                        # Build full block with our nonce
                         block_hex = header_base + nonce_bytes.hex()
-                        
-                        # Add transactions starting with our coinbase
                         block_hex += self.current_coinbase.hex()
                         for tx in template.get('transactions', []):
                             if 'data' in tx:
                                 block_hex += tx['data']
                         
-                        # Submit solution
                         success = self.rpc.submit_block(block_hex)
-                        
                         if success:
                             self.solution.emit({
                                 'nonce': nonce_bytes,
@@ -170,25 +156,37 @@ class MiningWorker(QThread):
                                 'attempts': attempts,
                                 'time': time.time() - self.start_time
                             })
-                            # Get new template
+                            
+                            # Get new template after successful solution
                             template = self.rpc.get_block_template()
                             if template:
                                 header_base = self.build_block_header(template)
                                 header_bytes = hex_string_to_bytes(header_base)
                                 seed = double_sha256(header_bytes).hex()
-                                miner = TensCoinMiner(seed, self.device)  # Updated class name
+                                miner = TensHashCore(seed, self.device, self.batch_size)
                                 miner.eval()
                                 self.status.emit(f"Got new block template - bits: {template['bits']}")
                         else:
                             self.status.emit("Block rejected by node")
                 
-                # Regular progress updates
+                # Periodic progress updates
                 if attempts % (self.batch_size * 10) == 0:
                     self.progress.emit({
                         'attempts': attempts,
                         'best_zero_bits': self.best_zero_bits,
                         'elapsed_time': time.time() - self.start_time
                     })
+                
+                # Check for new blocks periodically instead of every batch
+                new_template = self.check_new_block(template)
+                if new_template:
+                    template = new_template
+                    header_base = self.build_block_header(template)
+                    header_bytes = hex_string_to_bytes(header_base)
+                    seed = double_sha256(header_bytes).hex()
+                    miner = TensHashCore(seed, self.device, self.batch_size)
+                    miner.eval()
+                    self.status.emit(f"New block detected: {template['previousblockhash']}")
         
         except Exception as e:
             import traceback
