@@ -1,8 +1,8 @@
-"""Main entry point for the TensHash miner GUI."""
+"""Entry point for TensCoin miner GUI."""
 
 import sys
 from PyQt6.QtWidgets import QApplication
-from .window import MainWindow
+from .ui import MainWindow
 
 def main():
     app = QApplication(sys.argv)

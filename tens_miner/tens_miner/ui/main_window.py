@@ -7,7 +7,7 @@ from .test_mining import TestMiningThread, TEST_SEED, TEST_DIFFICULTY, EXPECTED_
 from ..worker import MiningWorker
 from ..wallet import generate_keypair, save_keys, load_wallet
 from ..network import RPCClient
-from ..utils import print_hex_le
+from ..utils import print_hex_msb
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -109,7 +109,30 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.status_text.append(f"Failed to generate address: {e}")
 
+    def show_test_result(self, nonce_hex, hash_hex):
+        """Show test result in a popup."""
+        if nonce_hex == EXPECTED_NONCE:
+            QMessageBox.information(
+                self,
+                "Test Result",
+                "✓ TEST PASSED!\n\n" \
+                f"Found correct nonce:\n" \
+                f"Nonce: {nonce_hex}\n" \
+                f"Hash:  {hash_hex}"
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Test Result",
+                "✗ TEST FAILED!\n\n" \
+                f"Found nonce: {nonce_hex}\n" \
+                f"Expected:    {EXPECTED_NONCE}\n\n" \
+                f"Found hash:  {hash_hex}\n" \
+                f"Expected:    {EXPECTED_HASH}"
+            )
+
     def start_mining(self):
+        """Start mining to the network."""
         # Get node address
         host, port = self.controls.get_node_address()
         if not host or not port:
@@ -162,6 +185,7 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def stop_mining(self):
+        """Stop mining."""
         # Stop either mining or test worker
         if self.worker:
             self.worker.stop()
@@ -191,14 +215,18 @@ class MainWindow(QMainWindow):
         """Handle found solutions."""
         self.stats.increment_coins()
 
-        nonce = print_hex_le(data['nonce'])
-        hash_str = print_hex_le(data['hash'])
+        nonce = print_hex_msb(data['nonce'])
+        hash_str = print_hex_msb(data['hash'])
         attempts = data['attempts']
         total_time = data['time']
 
         self.status_text.append("\nSolution found!")
         self.status_text.append(f"Nonce: {nonce}")
         self.status_text.append(f"Hash:  {hash_str}")
+
+        # If this was a test run, show result popup
+        if self.test_worker:
+            self.show_test_result(nonce, hash_str)
 
         # Handle RPC update if not in test mode
         if not self.test_worker:

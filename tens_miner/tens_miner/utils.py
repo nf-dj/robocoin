@@ -1,7 +1,7 @@
-"""Utility functions for TensHash mining."""
+"""Utility functions."""
 
 def count_leading_zero_bits(hash_bytes):
-    """Count the number of leading zero bits in the hash (big-endian display)."""
+    """Count leading zero bits in a hash."""
     count = 0
     for byte in hash_bytes:
         if byte == 0:
@@ -14,5 +14,10 @@ def count_leading_zero_bits(hash_bytes):
     return count
 
 def print_hex_le(hash_bytes):
-    """Return a hex string for the bytes in reverse order (big-endian display)."""
-    return "".join("{:02x}".format(b) for b in hash_bytes[::-1])
+    """Print hash bytes in little-endian hex format."""
+    return "".join("{:02x}".format(b) for b in hash_bytes)
+
+def print_hex_msb(hash_bytes):
+    """Print hash bytes in MSB-first hex format."""
+    # Take bytes in reverse order and format each
+    return "".join("{:02x}".format(b) for b in reversed(hash_bytes))
