@@ -62,19 +62,14 @@ def apply_matrix_and_threshold(binary_vectors, ternary_matrix):
     result = np.matmul(binary_vectors, ternary_matrix)
 
     # Step 2: Add bias computed from the ternary matrix
-    bias = -0.5 * np.sum(ternary_matrix, axis=0)
-    print("Bias vector:", bias)
-    print("Bias shape:", bias.shape)
-    result = result + bias
+    bias = -np.sum(ternary_matrix, axis=0)
 
     # Step 3: Add a random noise matrix.
     # Here we generate noise with values 0 or 1, with a unique noise vector per row.
     noise = np.random.choice([0, 1], size=result.shape)
-    print("Noise matrix shape:", noise.shape)
     
     # Step 4: Amplify the result and add the noise.
-    result = result * 2
-    result = result + noise
+    result = 2*result + bias + noise
 
     # Step 5: Simple thresholding: if result > 0 then 1, else 0.
     output = np.where(result > 0, 1, 0)
