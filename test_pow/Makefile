@@ -29,6 +29,9 @@ all: tens_hash tens_pow tens_pow_metal_int8 default.metallib check_metal
 check_metal: check_metal.mm
 	$(CXX) -framework Metal -framework Foundation -o $@ $^
 
+test_trits: test_trits.c
+	$(CC) $(CFLAGS) -DHASH_MAIN -o $@ $< $(LDFLAGS)
+
 tens_hash: tens_hash.c
 	$(CC) $(CFLAGS) -DHASH_MAIN -o $@ $< $(LDFLAGS)
 
