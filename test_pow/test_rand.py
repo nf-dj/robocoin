@@ -70,15 +70,11 @@ def apply_matrix_and_threshold(binary_vectors, ternary_matrix):
     result = result + bias
 
     # Step 3: Add a random ternary noise matrix (different noise vector for each row)
-    noise = np.random.choice([-1, 0, 1], size=result.shape)
+    noise = np.random.choice([ 0, 1], size=result.shape)
     print("Noise matrix shape:", noise.shape)
+    result*=2
     result = result + noise
 
-    random_ties = np.random.randint(0, 2, size=result.shape)
-    #output = np.where(result > 0, 1, np.where(result < 0, 0, random_ties))
-
-    result*=2
-    result+=random_ties
     output = np.where(result > 0, 1, 0)
 
     return output
