@@ -39,19 +39,17 @@ def generate_ternary_matrix(input_size=256, output_size=256):
 
     return A
 
-import numpy as np
-
 def apply_matrix_and_threshold(binary_vectors, ternary_matrix):
     """
-    Multiply binary vectors by a ternary matrix, add a bias term and a random ternary noise matrix,
-    then use a per-row threshold (the median) to binarize the result.
+    Multiply binary vectors by a ternary matrix, add a bias term and a random noise matrix,
+    then use a simple threshold (x > 0 → 1, else 0).
 
     Steps:
       1. Compute the matrix product.
-      2. Compute the bias vector (bias = -0.5 * sum(ternary_matrix, axis=0)) and add it to the product.
-      3. Add a random ternary noise matrix (values from {-1, 0, 1}) with a unique noise vector per row.
-      4. Compute the per-row median (this serves as the threshold).
-      5. For each element: if the element > median → 1, if < median → 0, if equal → assign randomly.
+      2. Compute the bias vector as: bias = -0.5 * sum(ternary_matrix, axis=0) and add it.
+      3. Add a random noise matrix. (Here we use noise drawn from {0, 1} per element.)
+      4. Multiply the result by 2 (to amplify the signal) and add the noise.
+      5. Apply thresholding: if result > 0 → 1; otherwise → 0.
     
     Parameters:
       binary_vectors (np.ndarray): Array of shape (m, n) with binary values (0 or 1).
@@ -69,17 +67,19 @@ def apply_matrix_and_threshold(binary_vectors, ternary_matrix):
     print("Bias shape:", bias.shape)
     result = result + bias
 
-    # Step 3: Add a random ternary noise matrix (different noise vector for each row)
-    noise = np.random.choice([ 0, 1], size=result.shape)
+    # Step 3: Add a random noise matrix.
+    # Here we generate noise with values 0 or 1, with a unique noise vector per row.
+    noise = np.random.choice([0, 1], size=result.shape)
     print("Noise matrix shape:", noise.shape)
-    result*=2
+    
+    # Step 4: Amplify the result and add the noise.
+    result = result * 2
     result = result + noise
 
+    # Step 5: Simple thresholding: if result > 0 then 1, else 0.
     output = np.where(result > 0, 1, 0)
 
     return output
-
-
 
 def analyze_binary_randomness(vectors):
     """Perform statistical tests on binary vectors."""
@@ -96,7 +96,7 @@ def analyze_binary_randomness(vectors):
     
     # Chi-square test for uniformity
     observed_counts = np.array([np.sum(vectors == 0), np.sum(vectors == 1)])
-    expected_counts = np.array([vectors.size/2, vectors.size/2])
+    expected_counts = np.array([vectors.size / 2, vectors.size / 2])
     chi2_stat, chi2_p = stats.chisquare(observed_counts, expected_counts)
     results['chi2_p_value'] = chi2_p
     # Save chi-square details
@@ -113,16 +113,53 @@ def analyze_binary_randomness(vectors):
         runs_test_results.append(runs)
     results['avg_runs'] = np.mean(runs_test_results)
     
-    # Autocorrelation
+    # Autocorrelation: compute the first 4 lags.
     autocorr_results = []
     for vector in vectors:
-        autocorr = np.correlate(vector - np.mean(vector), 
-                                  vector - np.mean(vector), mode='full')
-        autocorr = autocorr[len(autocorr)//2:]
+        autocorr = np.correlate(vector - np.mean(vector), vector - np.mean(vector), mode='full')
+        autocorr = autocorr[len(autocorr) // 2:]
         autocorr_results.append(autocorr[1:5] / autocorr[0])
     results['mean_autocorr'] = np.mean(autocorr_results, axis=0)
     
-    # Define test criteria and evaluate pass/fail
+    # Entropy calculation: for binary sequences, maximum entropy is 1.0.
+    entropies = []
+    for vector in vectors:
+        unique, counts = np.unique(vector, return_counts=True)
+        freqs = counts / vector.size
+        entropy = -np.sum(freqs * np.log2(freqs))
+        entropies.append(entropy)
+    results['avg_entropy'] = np.mean(entropies)
+    
+    # Serial correlation (lag-1)
+    serial_corrs = []
+    for vector in vectors:
+        if vector.size > 1:
+            corr = np.corrcoef(vector[:-1], vector[1:])[0, 1]
+            serial_corrs.append(corr)
+    results['avg_serial_corr'] = np.mean(serial_corrs)
+    
+    # Additional randomness check: Block Frequency Test.
+    # Divide each vector into blocks of size 32 and compute the std deviation of block frequencies.
+    block_size = 32
+    block_freqs = []
+    for vector in vectors:
+        num_blocks = vector.size // block_size
+        # Reshape vector to have num_blocks rows, each of length block_size.
+        blocks = vector[:num_blocks * block_size].reshape(num_blocks, block_size)
+        freqs = np.mean(blocks, axis=1)
+        block_freqs.append(freqs)
+    block_freqs = np.array(block_freqs)
+    std_block_freq = np.mean(np.std(block_freqs, axis=1))
+    results['avg_block_freq_std'] = std_block_freq
+    expected_std = 0.5 / np.sqrt(block_size)  # Theoretical std for block frequency with p=0.5.
+    
+    test_results['block_frequency_test'] = {
+        'pass': abs(std_block_freq - expected_std) < 0.02,
+        'criterion': f'block frequency std close to {expected_std:.4f} (±0.02)',
+        'value': std_block_freq
+    }
+    
+    # Define test criteria and evaluate pass/fail for the other tests.
     test_results['mean_test'] = {
         'pass': 0.45 <= results['overall_mean'] <= 0.55,
         'criterion': '0.45 <= mean <= 0.55',
@@ -156,6 +193,18 @@ def analyze_binary_randomness(vectors):
         'pass': max_autocorr < 0.1,
         'criterion': 'max autocorrelation < 0.1',
         'value': max_autocorr
+    }
+    
+    test_results['entropy_test'] = {
+        'pass': 0.99 <= results['avg_entropy'] <= 1.01,  # expecting near maximal entropy for binary.
+        'criterion': 'average entropy close to 1.0',
+        'value': results['avg_entropy']
+    }
+    
+    test_results['serial_corr_test'] = {
+        'pass': abs(results['avg_serial_corr']) < 0.05,
+        'criterion': 'absolute lag-1 serial correlation < 0.05',
+        'value': results['avg_serial_corr']
     }
     
     results['test_results'] = test_results
