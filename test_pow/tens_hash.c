@@ -38,18 +38,19 @@ static void matrix_multiply_mod2_int8(int8_t **A, uint8_t *in, uint8_t *out, int
             //int8_t w=rand()%3-1;
             sum += w * in[j];
         }
-        //sum += noise[i];
+        sum *= 2;
+        sum += noise[i];
         //sum = noise[i];
         fprintf(stderr,"%d ",sum);
-        if (sum>0) {
+        /*if (sum>0) {
             out[i]=1;
         } else if (sum<0) {
             out[i]=0;
         } else {
             out[i]=noise[i];
-        }
+        }*/
         //out[i] = sum & 1;
-        //out[i] = (sum > 0) ? 1 : 0;
+        out[i] = (sum > 0) ? 1 : 0;
     }
     fprintf(stderr,"\n");
 }
