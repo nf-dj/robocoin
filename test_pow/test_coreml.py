@@ -73,7 +73,7 @@ def main():
     model.predict(input_dict)
 
     # Calculate the number of operations per inference
-    num_operations = 64 * 256 * 256 * 2 * args.batch
+    num_operations = (64 * 256 * 256 * 2 + 3 * 256) * args.batch
 
     # List to store inference times
     inference_times = []
