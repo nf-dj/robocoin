@@ -4,6 +4,10 @@ import time
 import argparse
 from threading import Thread, Event
 
+# Global variables
+last_output = None
+inference_times = []
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Benchmark Core ML model performance.")
     parser.add_argument(
@@ -42,15 +46,23 @@ def get_compute_unit(compute_unit_str):
     }
     return compute_unit_mapping.get(compute_unit_str, ct.ComputeUnit.ALL)
 
-def display_tops(stop_event, interval, num_operations, inference_times):
+def display_tops(stop_event, interval, num_operations):
+    global last_output, inference_times
     while not stop_event.is_set():
         time.sleep(interval)
         if inference_times:
             avg_inference_time = sum(inference_times) / len(inference_times)
             tops = (num_operations / avg_inference_time) / 1e12
             print(f"Average inference time: {avg_inference_time:.6f} seconds | Estimated TOPS: {tops:.6f}")
+            
+            # Print last output (first row of batch) with size
+            if last_output is not None:
+                first_row = last_output[0][:256]
+                output_str = ' '.join(f"{x:.4f}" for x in first_row)
+                print(f"Last output (size={len(first_row)}): {output_str}")
 
 def main():
+    global last_output, inference_times
     args = parse_arguments()
 
     # Load the Core ML model with the specified compute unit
@@ -61,10 +73,10 @@ def main():
     print("Model input names:", model.input_description)
     print("Model output names:", model.output_description)
 
-    # Generate random input data with the appropriate shape
+    # Generate random binary input data (0s and 1s) with the appropriate shape
     input_shape = (args.batch, 256)
-    input_data = np.random.rand(*input_shape).astype(np.float32)
-    bias_data = np.random.rand(*input_shape).astype(np.float32)
+    input_data = np.random.randint(0, 2, input_shape).astype(np.float32)
+    bias_data = np.random.randint(0, 2, input_shape).astype(np.float32)
 
     # Prepare the input dictionary
     input_dict = {'input': input_data, 'bias': bias_data}
@@ -75,23 +87,25 @@ def main():
     # Calculate the number of operations per inference
     num_operations = (64 * 256 * 256 * 2 + 3 * 256) * args.batch
 
-    # List to store inference times
+    # Reset global variables
     inference_times = []
+    last_output = None
 
     # Event to signal the display thread to stop
     stop_event = Event()
 
     # Start the thread to display TOPS at regular intervals
-    display_thread = Thread(target=display_tops, args=(stop_event, args.interval, num_operations, inference_times))
+    display_thread = Thread(target=display_tops, args=(stop_event, args.interval, num_operations))
     display_thread.start()
 
     try:
         # Measure inference time over the specified number of inferences
         for _ in range(args.num):
             start_time = time.time()
-            model.predict(input_dict)
+            output = model.predict(input_dict)
             end_time = time.time()
             inference_times.append(end_time - start_time)
+            last_output = output['clip_63']  # Update last output
     finally:
         # Signal the display thread to stop and wait for it to finish
         stop_event.set()
