@@ -9,6 +9,7 @@ from Crypto.Cipher import ChaCha20
 
 # Constants
 OPS_PER_HASH = 256 * 256 * 2 * 64  # Matrix multiply size * rounds
+BATCH_SIZE = 8192  # Increased batch size
 
 progress_data = {
     "attempts": 0,
@@ -33,10 +34,10 @@ class HashVectorGenerator:
     def __init__(self, batch_size):
         self.libnoise = ctypes.CDLL("./libnoise.so")
         self.libnoise.compute_binary_and_noise_batch.argtypes = [
-            ctypes.POINTER(ctypes.c_uint8),  # inputs
-            ctypes.POINTER(ctypes.c_float),  # binary_out
-            ctypes.POINTER(ctypes.c_float),  # noise_out
-            ctypes.c_int                     # batch_size
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_int
         ]
         self.libnoise.compute_binary_and_noise_batch.restype = None
 
@@ -93,15 +94,27 @@ def generate_ternary_matrix_from_seed(seed, device):
         A[i, torch.tensor(chosen_indices, dtype=torch.long, device=device)] = sign_vector
     return A
 
-def binary_tensor_to_bytes(vec):
-    vec = vec.cpu().numpy()
-    bits = ''.join(str(int(bit)) for bit in vec)
-    return bytes(int(bits[i:i+8], 2) for i in range(0, len(bits), 8))
+def apply_matrix_rounds(binary_vectors, ternary_matrix, bias_plus_noise):
+    # Process all inputs in parallel through all rounds
+    batch_size = binary_vectors.shape[0]
+    outputs = binary_vectors
+    
+    for _ in range(64):
+        results = torch.matmul(outputs, ternary_matrix)
+        results = 2 * results + bias_plus_noise
+        outputs = (results > 0).float()
+    
+    return outputs
 
-def apply_matrix_and_threshold(binary_vector, ternary_matrix, bias_plus_noise):
-    result = torch.matmul(binary_vector, ternary_matrix)
-    result = 2 * result + bias_plus_noise
-    return (result > 0).float()
+def binary_vectors_to_bytes(vectors):
+    bits = vectors.cpu().numpy()
+    batch_size = bits.shape[0]
+    results = []
+    for i in range(batch_size):
+        bits_str = ''.join(str(int(bit)) for bit in bits[i])
+        byte_vals = [int(bits_str[i:i+8], 2) for i in range(0, 256, 8)]
+        results.append(bytes(byte_vals))
+    return results
 
 def print_progress():
     while not progress_data["stop"]:
@@ -116,10 +129,9 @@ def print_progress():
         print(status, end="", flush=True)
         time.sleep(1)
 
-def find_pow(ternary_matrix, target_bytes, batch_size=1024, device='mps'):
+def find_pow(ternary_matrix, target_bytes, batch_size=BATCH_SIZE, device='mps'):
     target = int.from_bytes(target_bytes, 'big')
     vector_gen = HashVectorGenerator(batch_size)
-    # Pre-calculate bias since it only depends on ternary matrix
     bias = -torch.sum(ternary_matrix, dim=0)
     
     progress_thread = threading.Thread(target=print_progress, daemon=True)
@@ -128,33 +140,33 @@ def find_pow(ternary_matrix, target_bytes, batch_size=1024, device='mps'):
     try:
         while True:
             input_batch = torch.randint(0, 256, (batch_size, 32), dtype=torch.uint8)
-            
-            # Generate binary and noise vectors for entire batch using C function
             binary_vectors, noise_vectors = vector_gen.generate(input_batch.numpy(), device)
             
-            # Process each input in batch
-            for i in range(batch_size):
-                input_bytes = input_batch[i].numpy().tobytes()
-                binary_vector = binary_vectors[i]
-                bias_plus_noise = bias + noise_vectors[i]  # Pre-calculate for all rounds
-                
-                output_vector = binary_vector
-                for _ in range(64):
-                    output_vector = apply_matrix_and_threshold(output_vector, ternary_matrix, bias_plus_noise)
-                
-                output_bytes = binary_tensor_to_bytes(output_vector)
-                output_int = int.from_bytes(output_bytes, 'big')
-                
-                progress_data["attempts"] += 1
+            # Add bias to noise vectors once for all inputs
+            bias_plus_noise = bias.unsqueeze(0) + noise_vectors
+            
+            # Process entire batch through all rounds
+            output_vectors = apply_matrix_rounds(binary_vectors, ternary_matrix, bias_plus_noise)
+            
+            # Convert outputs to bytes
+            output_bytes_list = binary_vectors_to_bytes(output_vectors)
+            
+            # Update progress
+            progress_data["attempts"] += batch_size
+            
+            # Check outputs
+            for i, output_bytes in enumerate(output_bytes_list):
                 zeros = count_leading_zero_bits(output_bytes)
                 if zeros > progress_data["best_bits"]:
                     progress_data["best_bits"] = zeros
-                
+                    
+                output_int = int.from_bytes(output_bytes, 'big')
                 if output_int < target:
                     progress_data["stop"] = True
                     progress_thread.join()
                     print("\nSolution found!")
-                    return input_bytes.hex()
+                    return input_batch[i].numpy().tobytes().hex()
+                    
     except KeyboardInterrupt:
         progress_data["stop"] = True
         progress_thread.join()
@@ -177,6 +189,7 @@ def main():
     print(f"Mining with PyTorch on device: {device}")
     print(f"Seed: {seed.hex()}")
     print(f"Target: {target_bytes.hex()}")
+    print(f"Batch size: {BATCH_SIZE}")
     
     ternary_matrix = generate_ternary_matrix_from_seed(seed, device)
     solution = find_pow(ternary_matrix, target_bytes)
