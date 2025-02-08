@@ -8,12 +8,12 @@ model = ct.models.MLModel('test_coreml.mlpackage')
 print("Model input names:", model.input_description)
 print("Model output names:", model.output_description)
 
-# Generate a random input array with the appropriate shape
-# Ensure the input data type matches the model's expected input type
-input_data = np.random.rand(1, 256).astype(np.float32)
+# Generate random input data with the appropriate shape
+input_data = np.random.rand(1024, 256).astype(np.float32)  # Shape: (batch_size, feature_size)
+bias_data = np.random.rand(1024, 256).astype(np.float32)   # Shape: (batch_size, feature_size)
 
 # Prepare the input dictionary
-input_dict = {'input': input_data}
+input_dict = {'input': input_data, 'bias': bias_data}
 
 # Perform inference
 predictions = model.predict(input_dict)
