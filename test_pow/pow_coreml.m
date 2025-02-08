@@ -3,7 +3,7 @@
 #import <pthread.h>
 
 // Constants
-const NSUInteger BATCH_SIZE = 8192;
+const NSUInteger BATCH_SIZE = 128; // Updated to match export script
 const uint64_t OPS_PER_HASH = 256 * 256 * 2 * 64;
 
 // Progress tracking
@@ -117,8 +117,9 @@ int main(int argc, const char * argv[]) {
         NSArray *inputShape = @[@(BATCH_SIZE), @256];
         printf("\nCreating input arrays with shape: %s\n", inputShape.description.UTF8String);
         
+        // Create inputs as FP16 arrays
         MLMultiArray *binaryInput = [[MLMultiArray alloc] initWithShape:inputShape
-                                                              dataType:MLMultiArrayDataTypeFloat32
+                                                              dataType:MLMultiArrayDataTypeFloat16
                                                                  error:&error];
         if (error) {
             printf("Error creating binary input: %s\n", error.description.UTF8String);
@@ -126,7 +127,7 @@ int main(int argc, const char * argv[]) {
         }
         
         MLMultiArray *noiseInput = [[MLMultiArray alloc] initWithShape:inputShape
-                                                             dataType:MLMultiArrayDataTypeFloat32
+                                                             dataType:MLMultiArrayDataTypeFloat16
                                                                 error:&error];
         if (error) {
             printf("Error creating noise input: %s\n", error.description.UTF8String);
@@ -146,7 +147,7 @@ int main(int argc, const char * argv[]) {
         
         // Try to find output key name from model description
         for (NSString *key in modelDesc.outputDescriptionsByName) {
-            outputKey = key;  // Just take the first (and should be only) output key
+            outputKey = key;  // Take the first output key
             break;
         }
         
@@ -158,10 +159,10 @@ int main(int argc, const char * argv[]) {
         
         while (!shouldStop) {
             @autoreleasepool {
-                // Generate random inputs
+                // Generate random inputs (0 or 1) for each element
                 for (NSUInteger i = 0; i < BATCH_SIZE * 256; i++) {
                     binaryPtr[i] = (float)(arc4random_uniform(2));
-                    noisePtr[i] = ((float)arc4random_uniform(1000) / 1000.0f) * 0.1f;
+                    noisePtr[i] = (float)(arc4random_uniform(2));
                 }
                 
                 if (debugCounter < 3) {
@@ -222,7 +223,7 @@ int main(int argc, const char * argv[]) {
                         bestBits = zeros;
                     }
                     
-                                            if (memcmp(outputBytes, targetBytes, 32) < 0) {
+                    if (memcmp(outputBytes, targetBytes, 32) < 0) {
                         shouldStop = true;
                         printf("\nSolution found!\n");
                         
@@ -255,3 +256,4 @@ int main(int argc, const char * argv[]) {
     }
     return 0;
 }
+

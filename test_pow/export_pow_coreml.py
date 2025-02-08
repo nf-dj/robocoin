@@ -6,7 +6,7 @@ import numpy as np
 import subprocess
 from Crypto.Cipher import ChaCha20
 
-BATCH_SIZE = 8192  # Match the batch size with Objective-C code
+BATCH_SIZE = 128  # Match the batch size with Objective-C code
 
 class PowModel(nn.Module):
     def __init__(self, seed):
@@ -18,12 +18,12 @@ class PowModel(nn.Module):
         # Generate the ternary matrix as a parameter
         ternary_matrix = self.generate_ternary_matrix_from_seed(seed)
         self.register_parameter('ternary_matrix', 
-                              nn.Parameter(ternary_matrix.float(), requires_grad=False))
+                                nn.Parameter(ternary_matrix.float(), requires_grad=False))
         
         # Register bias as a parameter
         bias = -torch.sum(ternary_matrix, dim=0)
         self.register_parameter('bias', 
-                              nn.Parameter(bias.float(), requires_grad=False))
+                                nn.Parameter(bias.float(), requires_grad=False))
 
     def generate_ternary_matrix_from_seed(self, seed):
         A = torch.zeros((self.input_size, self.output_size), dtype=torch.float32)
@@ -53,19 +53,19 @@ class PowModel(nn.Module):
         return A
 
     def forward(self, x, noise):
-        # x: binary input vector [batch_size, 256]
-        # noise: noise vector [batch_size, 256]
+        # Ensure inputs are FP16
+        x = x.half()
+        noise = noise.half()
         outputs = x
         
-        # Add bias to noise once for all rounds
-        bias_plus_noise = self.bias.unsqueeze(0) + noise
+        # Add bias to noise (cast bias to FP16)
+        bias_plus_noise = self.bias.unsqueeze(0).half() + noise
         
-        # Apply rounds
+        # Apply rounds using FP16 operations
         for _ in range(self.rounds):
-            results = torch.matmul(outputs, self.ternary_matrix)
-            results = 2 * results + bias_plus_noise
-            outputs = (results > 0).float()
-        
+            results = torch.matmul(outputs, self.ternary_matrix.half())
+            results = 2.0 * results + bias_plus_noise
+            outputs = (results > 0).half()
         return outputs
 
 def export_model(seed_hex):
@@ -77,32 +77,37 @@ def export_model(seed_hex):
     # Create and initialize the model
     model = PowModel(seed)
     model.eval()
+    
+    # Convert model to FP16 so that all parameters and ops use half precision
+    model = model.half()
 
-    # Create example inputs with explicit float32 dtype and batch dimension
-    example_binary = torch.zeros((BATCH_SIZE, 256), dtype=torch.float32)
-    example_noise = torch.zeros((BATCH_SIZE, 256), dtype=torch.float32)
+    # Create example inputs with FP16 dtype and proper batch dimension.
+    # Use non-zero (random) inputs for tracing!
+    example_binary = torch.randint(0, 2, (BATCH_SIZE, 256), dtype=torch.float16)
+    example_noise = torch.randint(0, 2, (BATCH_SIZE, 256), dtype=torch.float16)
 
-    # Trace the model
+    # Trace the model with FP16 inputs
     traced_model = torch.jit.trace(model, (example_binary, example_noise))
 
-    # Define input types with batch dimension
-    input_binary = ct.TensorType(shape=(BATCH_SIZE, 256), name="binary_input")
-    input_noise = ct.TensorType(shape=(BATCH_SIZE, 256), name="noise_input")
+    # Define input types with batch dimension and FP16 dtype
+    input_binary = ct.TensorType(shape=(BATCH_SIZE, 256), dtype=np.float16, name="binary_input")
+    input_noise = ct.TensorType(shape=(BATCH_SIZE, 256), dtype=np.float16, name="noise_input")
 
-    # Convert to CoreML
+    # Convert to Core ML with FP16 compute precision and minimum deployment target iOS16
     coreml_model = ct.convert(
         traced_model,
         inputs=[input_binary, input_noise],
         source="pytorch",
-        minimum_deployment_target=ct.target.iOS14
+        minimum_deployment_target=ct.target.iOS16,
+        compute_precision=ct.precision.FLOAT16
     )
 
-    # Save the model
-    mlmodel_filename = "PowModel.mlmodel"
+    # Save the model as an ML Program (.mlpackage is required)
+    mlmodel_filename = "PowModel.mlpackage"
     coreml_model.save(mlmodel_filename)
     print(f"Core ML model saved as {mlmodel_filename}")
 
-    # Compile the model
+    # Compile the model using coremlc
     compile_cmd = ["xcrun", "coremlc", "compile", mlmodel_filename, "."]
     try:
         subprocess.run(compile_cmd, check=True)
@@ -117,3 +122,4 @@ if __name__ == "__main__":
         sys.exit(1)
     
     export_model(sys.argv[1])
+
