@@ -1,40 +1,64 @@
 #!/usr/bin/env python3
-import numpy as np
+import torch
+import torch.nn as nn
 import coremltools as ct
+import numpy as np
+import subprocess
 
-def binary_to_hex(binary_array):
-    # Convert binary array to bytes then to hex
-    bits = ''.join(str(int(bit)) for bit in binary_array)
-    bytes_list = []
-    for i in range(0, len(bits), 8):
-        byte = bits[i:i+8]
-        bytes_list.append(int(byte, 2))
-    return bytes(bytes_list).hex()
+class SimpleModel(nn.Module):
+    def __init__(self):
+        super(SimpleModel, self).__init__()
+        # Create a linear layer with 4 input features and 4 output features, no bias.
+        self.linear = nn.Linear(4, 4, bias=False)
+        # Define a 4x4 ternary weight matrix.
+        matrix = torch.tensor([
+            [ 1.0,  0.0, -1.0,  1.0],
+            [ 0.0, -1.0,  1.0,  0.0],
+            [-1.0,  1.0,  0.0, -1.0],
+            [ 1.0,  0.0,  1.0, -1.0]
+        ], dtype=torch.float32)
+        # Add a small epsilon to force full-precision behavior.
+        matrix += 1e-6  
+        with torch.no_grad():
+            self.linear.weight.copy_(matrix)
 
-def main():
-    print("Loading model...")
-    model = ct.models.MLModel("tens_hash.mlmodel")
-    
-    print("\nModel inputs:", model.input_description)
-    print("Model outputs:", model.output_description)
-    
-    # Create test input - all zeros
-    input_vector = np.zeros(256, dtype=np.float32)
-    noise_vector = np.zeros(256, dtype=np.float32)
-    
-    print("\nTesting with zero vectors...")
-    input_data = {
-        "input": input_vector,
-        "noise": noise_vector
-    }
-    
-    try:
-        prediction = model.predict(input_data)
-        print("\nPrediction successful!")
-        print("Output shape:", prediction['output'].shape)
-        print("Output hex:", binary_to_hex(prediction['output']))
-    except Exception as e:
-        print("\nPrediction failed:", str(e))
-        
+    def forward(self, x):
+        return self.linear(x)
+
 if __name__ == "__main__":
-    main()
+    # Instantiate the model and set it to evaluation mode.
+    model = SimpleModel()
+    model.eval()
+
+    # Create an example input tensor of shape [1, 4].
+    example_input = torch.tensor([[1.0, 0.0, 1.0, 0.0]], dtype=torch.float32)
+
+    # Trace the model using TorchScript.
+    traced_model = torch.jit.trace(model, example_input)
+
+    # Define the input type with a name that matches your expected feature name.
+    # Do NOT specify outputs; they will be inferred automatically.
+    input_type = ct.TensorType(shape=example_input.shape, name="input")
+
+    # Convert the traced PyTorch model to Core ML.
+    # Specify source="pytorch" and set the minimum deployment target.
+    coreml_model = ct.convert(
+        traced_model,
+        inputs=[input_type],
+        source="pytorch",
+        minimum_deployment_target=ct.target.iOS14
+    )
+
+    # Save the Core ML model.
+    mlmodel_filename = "SimpleModel.mlmodel"
+    coreml_model.save(mlmodel_filename)
+    print(f"Core ML model saved as {mlmodel_filename}")
+
+    # Compile the .mlmodel into a .mlmodelc folder using the Core ML compiler.
+    compile_cmd = ["xcrun", "coremlc", "compile", mlmodel_filename, "."]
+    try:
+        subprocess.run(compile_cmd, check=True)
+        print("Model compiled successfully into SimpleModel.mlmodelc")
+    except subprocess.CalledProcessError as e:
+        print("Error during model compilation:", e)
+

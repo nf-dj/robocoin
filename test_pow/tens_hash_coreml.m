@@ -1,38 +1,27 @@
 #import <Foundation/Foundation.h>
 #import <CoreML/CoreML.h>
+#import <QuartzCore/QuartzCore.h>
 
-void printMLMultiArrayInfo(MLMultiArray *array, const char *name) {
-    NSLog(@"%s info:", name);
-    NSLog(@"  Shape: %@", array.shape);
-    NSLog(@"  Strides: %@", array.strides);
-    NSLog(@"  Data type: %ld", (long)array.dataType);
-    
-    float *ptr = (float *)array.dataPointer;
-    NSLog(@"  All values:");
-    for (int i = 0; i < 4; i++) {
-        NSLog(@"    %d: %f", i, ptr[i]);
-    }
+#define NUM_TESTS 1000000
+#define VECTOR_SIZE 256
+
+void print_performance(uint64_t ops, double duration) {
+    double tops = (ops * 2.0) / (duration * 1e12);  // *2 for multiply-add
+    printf("Time: %.3f seconds\n", duration);
+    printf("Ops: %llu\n", ops);
+    printf("Performance: %.2f TOPS\n", tops);
 }
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
         NSError *error = nil;
         
-        NSLog(@"Starting program...");
-        
-        // Configure model loading
+        // Load model
         MLModelConfiguration *config = [[MLModelConfiguration alloc] init];
         config.computeUnits = MLComputeUnitsAll;
         
         NSString *modelPath = @"tens_hash.mlmodelc";
-        NSLog(@"Checking for model at path: %@", modelPath);
-        if (![[NSFileManager defaultManager] fileExistsAtPath:modelPath]) {
-            NSLog(@"Error: Model file not found at %@", modelPath);
-            return 1;
-        }
-        
         NSURL *modelURL = [NSURL fileURLWithPath:modelPath];
-        NSLog(@"Loading model...");
         MLModel *model = [MLModel modelWithContentsOfURL:modelURL 
                                          configuration:config
                                                error:&error];
@@ -40,11 +29,10 @@ int main(int argc, const char * argv[]) {
             NSLog(@"Error loading model: %@", error);
             return 1;
         }
-        NSLog(@"Model loaded successfully");
+        printf("Model loaded successfully\n");
         
-        // Create input tensor
-        NSLog(@"Creating MLMultiArray...");
-        MLMultiArray *inputArray = [[MLMultiArray alloc] initWithShape:@[@1, @4]
+        // Create input tensor once
+        MLMultiArray *inputArray = [[MLMultiArray alloc] initWithShape:@[@1, @VECTOR_SIZE]
                                                            dataType:MLMultiArrayDataTypeFloat32
                                                               error:&error];
         if (error) {
@@ -52,42 +40,39 @@ int main(int argc, const char * argv[]) {
             return 1;
         }
         
-        // Fill with binary test values [1,0,1,0]
+        // Fill with random binary values
         float *inputPtr = (float *)inputArray.dataPointer;
-        inputPtr[0] = 1.0f;
-        inputPtr[1] = 0.0f;
-        inputPtr[2] = 1.0f;
-        inputPtr[3] = 0.0f;
+        for (int i = 0; i < VECTOR_SIZE; i++) {
+            inputPtr[i] = (arc4random() % 2) ? 1.0f : 0.0f;
+        }
         
-        NSLog(@"Input array created");
-        printMLMultiArrayInfo(inputArray, "Input array");
-        
-        // Create input features
-        NSLog(@"Creating input features...");
+        // Create input features once
         MLDictionaryFeatureProvider *inputFeatures = [[MLDictionaryFeatureProvider alloc] 
             initWithDictionary:@{@"input": inputArray} error:&error];
         
-        if (error) {
-            NSLog(@"Error creating input features: %@", error);
-            return 1;
-        }
+        printf("Starting %d matrix multiplications...\n", NUM_TESTS);
+        uint64_t total_ops = (uint64_t)NUM_TESTS * VECTOR_SIZE * VECTOR_SIZE;
         
-        // Run inference
-        NSLog(@"Starting inference...");
-        id<MLFeatureProvider> outputFeatures = [model predictionFromFeatures:inputFeatures 
-                                                                    error:&error];
-        if (error) {
-            NSLog(@"Error running inference: %@", error);
-            return 1;
-        }
-        NSLog(@"Inference completed");
+        // Time the matrix multiplications
+        CFTimeInterval startTime = CACurrentMediaTime();
         
-        // Get output
-        MLMultiArray *outputArray = (MLMultiArray *)[outputFeatures featureValueForName:@"output"].multiArrayValue;
-        NSLog(@"Output received");
-        printMLMultiArrayInfo(outputArray, "Output array");
+        for(int i = 0; i < NUM_TESTS; i++) {
+            @autoreleasepool {
+                id<MLFeatureProvider> outputFeatures = [model predictionFromFeatures:inputFeatures 
+                                                                            error:&error];
+                if (error) {
+                    NSLog(@"Error running inference: %@", error);
+                    return 1;
+                }
                 
-        NSLog(@"Program completed successfully");
+                if (i % 100000 == 0) {
+                    printf("Completed %d tests\n", i);
+                }
+            }
+        }
+        
+        CFTimeInterval duration = CACurrentMediaTime() - startTime;
+        print_performance(total_ops, duration);
     }
     return 0;
 }

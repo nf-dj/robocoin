@@ -5,48 +5,80 @@ from coremltools.models.neural_network import NeuralNetworkBuilder
 from coremltools.models import datatypes
 
 def create_model():
-    # Test case: 4x4 matrix
-    input_features = [('input', datatypes.Array(1, 4))]
-    output_features = [('output', datatypes.Array(1, 4))]
+    # Use 256x256 matrix
+    input_features = [('input', datatypes.Array(1, 256))]
+    output_features = [('output', datatypes.Array(1, 256))]
     
-    # Create a simple test ternary matrix
-    matrix = np.array([
-        [1, -1, 0, 1],
-        [-1, 1, 1, 0],
-        [0, 1, -1, -1],
-        [1, 0, -1, 1]
-    ], dtype=np.float32)
+    # Create a random ternary matrix
+    matrix = np.random.choice([-1, 0, 1], size=(256, 256), p=[0.25, 0.5, 0.25]).astype(np.float32)
+    print(f"Matrix shape: {matrix.shape}")
     
-    print("Matrix used:")
-    print(matrix)
-    print("\nMatrix shape:", matrix.shape)
-    print("Matrix dtype:", matrix.dtype)
-    print("Matrix min/max:", np.min(matrix), np.max(matrix))
-    
-    # Look at model params
     builder = NeuralNetworkBuilder(
         input_features,
         output_features,
         disable_rank5_shape_mapping=True
     )
     
-    # Just one matrix multiply
-    builder.add_inner_product(
-        name='matmul',
-        input_name='input',
-        output_name='output',
-        input_channels=4,
-        output_channels=4,
-        W=matrix,
-        b=None,
-        has_bias=False
+    # Reshape input 
+    builder.add_reshape(
+        name="reshape_input",
+        input_name="input",
+        output_name="input_reshaped",
+        target_shape=(1, 1, 1, 1, 256),  # Rank 5 as required
+        mode=0
     )
     
-    # Print spec details
-    print("\nLayer spec:")
-    layer = builder.spec.neuralNetwork.layers[0]
-    print("Layer type:", layer.innerProduct)
-    print("Layer weights shape:", layer.innerProduct.weights.floatValue)
+    # Load matrix weights
+    matrix_name = 'matrix_const'
+    builder.add_load_constant(
+        name=matrix_name,
+        output_name=matrix_name,
+        constant_value=matrix,
+        shape=[256, 256]
+    )
+    
+    # Reshape matrix to rank 5
+    builder.add_reshape(
+        name="reshape_matrix",
+        input_name=matrix_name,
+        output_name="matrix_reshaped",
+        target_shape=(1, 1, 1, 256, 256),  # Rank 5
+        mode=0
+    )
+    
+    # Reshape input for multiply
+    builder.add_reshape(
+        name="reshape_input_2",
+        input_name="input_reshaped",
+        output_name="input_for_multiply",
+        target_shape=(1, 1, 1, 1, 256),
+        mode=0
+    )
+    
+    # Elementwise multiply
+    builder.add_multiply_broadcastable(
+        name="multiply",
+        input_names=["input_for_multiply", "matrix_reshaped"],
+        output_name="multiply_out"
+    )
+    
+    # Sum along last dimension
+    builder.add_reduce_sum(
+        name="sum",
+        input_name="multiply_out",
+        output_name="sum_out",
+        axes=[4],  # Sum along last dimension (now index 4 due to rank 5)
+        keepdims=True
+    )
+    
+    # Final reshape back to rank 2
+    builder.add_reshape(
+        name="reshape_output",
+        input_name="sum_out",
+        output_name="output",
+        target_shape=(1, 256),
+        mode=0
+    )
     
     return builder
 
