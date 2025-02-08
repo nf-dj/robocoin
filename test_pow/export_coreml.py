@@ -6,6 +6,8 @@ import coremltools as ct
 from coremltools.models.neural_network import NeuralNetworkBuilder
 from coremltools.models import datatypes
 
+ROUNDS=64
+
 def generate_ternary_matrix_from_seed(seed):
     input_size, output_size = 256, 256
     A = np.zeros((input_size, output_size), dtype=np.float32)
@@ -44,7 +46,7 @@ def create_model(ternary_matrix):
     previous_output = "input"
     
     # Two rounds
-    for i in range(2):
+    for i in range(ROUNDS):
         # Matrix multiply
         matmul_name = f"matmul_{i}"
         builder.add_inner_product(
@@ -58,33 +60,23 @@ def create_model(ternary_matrix):
             has_bias=False
         )
 
-        # Scale by 2
-        scale_name = f"scale_{i}"
-        builder.add_scale(
-            name=scale_name,
-            input_name=f"{matmul_name}_out",
-            output_name=f"{scale_name}_out",
-            W=np.array([2.0], dtype=np.float32),
-            b=None,
-            has_bias=False
-        )
-
         # Add noise
         noise_add_name = f"noise_add_{i}"
         builder.add_add_broadcastable(
             name=noise_add_name,
-            input_names=[f"{scale_name}_out", "noise"],
+            input_names=[f"{matmul_name}_out", "noise"],
             output_name=f"{noise_add_name}_out"
         )
 
-        # ReLU
-        relu_name = f"relu_{i}"
-        output_name = f"round_{i}_out" if i < 1 else "output"
-        builder.add_activation(
-            name=relu_name,
-            non_linearity='RELU',
+        # Clip to [0,1]
+        clip_name = f"clip_{i}"
+        output_name = f"round_{i}_out" if i < ROUNDS-1 else "output"
+        builder.add_clip(
+            name=clip_name,
             input_name=f"{noise_add_name}_out",
-            output_name=output_name
+            output_name=output_name,
+            min_value=0.0,
+            max_value=1.0
         )
 
         previous_output = output_name

@@ -60,16 +60,13 @@ int main(int argc, const char * argv[]) {
             return 1;
         }
         
-        // Fill input with alternating 1s and -1s
+        // Fill input with binary (0,1) and noise with integers
         float *inputPtr = (float *)inputArray.dataPointer;
-        for (int i = 0; i < 256; i++) {
-            inputPtr[i] = (i % 2) ? 1.0f : -1.0f;
-        }
-        
-        // Fill noise with zeros
         float *noisePtr = (float *)noiseArray.dataPointer;
         for (int i = 0; i < 256; i++) {
-            noisePtr[i] = 0.0f;
+            inputPtr[i] = (arc4random() % 2) ? 1.0f : 0.0f;
+            // Generate noise between -64 and 64
+            noisePtr[i] = (float)(arc4random() % 129) - 64;
         }
         
         NSLog(@"Input arrays created");
