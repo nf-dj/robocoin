@@ -5,7 +5,7 @@ from coremltools.converters.mil import Builder as mb
 # Set a fixed random seed for reproducibility
 np.random.seed(42)
 
-batch_size=1024
+batch_size=8192
 
 # Define random weights and biases
 weights = np.random.rand(256, 256).astype(np.float32)

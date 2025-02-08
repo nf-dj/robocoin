@@ -22,7 +22,7 @@ def parse_arguments():
     parser.add_argument(
         '-b', '--batch',
         type=int,
-        default=1024,
+        default=8192,
         help="Batch size for each inference."
     )
     parser.add_argument(
