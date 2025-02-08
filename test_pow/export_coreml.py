@@ -5,7 +5,7 @@ from coremltools.converters.mil import Builder as mb
 # Set a fixed random seed for reproducibility
 np.random.seed(42)
 
-batch_size=8192
+batch_size=8192 # TODO: change to dynamic
 
 # Define random weights and biases
 weights = np.random.rand(256, 256).astype(np.float32)
@@ -23,7 +23,6 @@ def matmul_scaled_bias_clamped_relu_prog(input,bias):
         input = mb.matmul(x=input, y=weights)  # Matrix Multiplication with constant weights
         input = mb.mul(x=input, y=2.0)         # Multiply by 2
         input = mb.add(x=input, y=bias)        # Add constant bias
-        input = mb.relu(x=input)               # Apply ReLU
         input = mb.clip(x=input, alpha=0.0, beta=1.0)  # Clamp to [0, 1]
     return input
 
