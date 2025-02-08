@@ -30,10 +30,10 @@ def generate_ternary_matrix_from_seed(seed):
 
 def create_model(ternary_matrix):
     input_features = [
-        ('input', datatypes.Array(256)),
-        ('noise', datatypes.Array(256))
+        ('input', datatypes.Array(1, 256)),
+        ('noise', datatypes.Array(1, 256))
     ]
-    output_features = [('output', datatypes.Array(256))]
+    output_features = [('output', datatypes.Array(1, 256))]
     
     builder = NeuralNetworkBuilder(
         input_features,
@@ -41,14 +41,10 @@ def create_model(ternary_matrix):
         disable_rank5_shape_mapping=True
     )
 
-    # Initial state
     previous_output = "input"
     
-    # Pre-compute bias
-    bias = -np.sum(ternary_matrix, axis=0).astype(np.float16)
-    
-    # Create 64 rounds
-    for i in range(64):
+    # Two rounds
+    for i in range(2):
         # Matrix multiply
         matmul_name = f"matmul_{i}"
         builder.add_inner_product(
@@ -57,7 +53,7 @@ def create_model(ternary_matrix):
             output_name=f"{matmul_name}_out",
             input_channels=256,
             output_channels=256,
-            W=ternary_matrix.astype(np.float16),
+            W=ternary_matrix.astype(np.float32),
             b=None,
             has_bias=False
         )
@@ -68,38 +64,27 @@ def create_model(ternary_matrix):
             name=scale_name,
             input_name=f"{matmul_name}_out",
             output_name=f"{scale_name}_out",
-            W=np.array([2.0], dtype=np.float16),
-            b=np.array([0.0], dtype=np.float16),
+            W=np.array([2.0], dtype=np.float32),
+            b=None,
             has_bias=False
         )
 
-        # Add bias
-        bias_name = f"bias_{i}"
-        builder.add_bias(
-            name=bias_name,
-            input_name=f"{scale_name}_out",
-            output_name=f"{bias_name}_out",
-            b=bias,
-            shape_bias=[256]
-        )
-
-        # Add noise (same noise used for all rounds)
+        # Add noise
         noise_add_name = f"noise_add_{i}"
         builder.add_add_broadcastable(
             name=noise_add_name,
-            input_names=[f"{bias_name}_out", "noise"],
+            input_names=[f"{scale_name}_out", "noise"],
             output_name=f"{noise_add_name}_out"
         )
 
-        # Threshold
-        threshold_name = f"threshold_{i}"
-        output_name = f"round_{i}_out" if i < 63 else "output"
-        builder.add_unary(
-            name=threshold_name,
+        # ReLU
+        relu_name = f"relu_{i}"
+        output_name = f"round_{i}_out" if i < 1 else "output"
+        builder.add_activation(
+            name=relu_name,
+            non_linearity='RELU',
             input_name=f"{noise_add_name}_out",
-            output_name=output_name,
-            mode='threshold',
-            alpha=0.0
+            output_name=output_name
         )
 
         previous_output = output_name
@@ -124,22 +109,17 @@ def main():
         print("Creating model architecture...")
         builder = create_model(ternary_matrix)
         
-        print("Configuring model metadata...")
+        print("Creating model...")
         spec = builder.spec
-        spec.description.metadata.shortDescription = (
-            "64-round TensHash network with ternary matrix"
-        )
-        spec.specificationVersion = 5  # Core ML 5 (iOS 16+)
-        
-        print("Creating model with ANE optimizations...")
-        model = ct.models.MLModel(
-            spec,
-            compute_units=ct.ComputeUnit.ALL
-        )
+        model = ct.models.MLModel(spec)
         
         print("Saving model...")
         model.save("tens_hash.mlmodel")
-        print("Model saved successfully!")
+        
+        print("Compiling model...")
+        import os
+        os.system(f"xcrun coremlc compile tens_hash.mlmodel .")
+        print("Model compiled successfully!")
         
     except Exception as e:
         print(f"Error creating model: {str(e)}")

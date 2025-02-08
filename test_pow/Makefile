@@ -24,7 +24,7 @@ LDFLAGS = -L$(OPENSSL_PATH)/lib -L$(SODIUM_PATH)/lib \
           -lssl -lcrypto -lsodium
 
 # Targets
-all: tens_hash tens_pow tens_pow_metal_int8 default.metallib check_metal
+all: tens_hash tens_pow tens_pow_metal_int8 default.metallib check_metal tens_hash_coreml
 
 check_metal: check_metal.mm
 	$(CXX) -framework Metal -framework Foundation -o $@ $^
@@ -41,6 +41,9 @@ tens_pow: tens_pow.c tens_hash.c
 tens_pow_metal_int8: tens_pow_metal_int8.mm
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
+tens_hash_coreml: tens_hash_coreml.m
+	$(CC) -fobjc-arc -framework Foundation -framework CoreML -o $@ $^
+
 libnoise.so: noise_gen.c
 	gcc -O3 -shared -fPIC -o libnoise.so noise_gen.c -lsodium $(CFLAGS) $(LDFLAGS)
 
@@ -50,6 +53,6 @@ default.metallib: tens_pow_metal_int8.metal
 	rm -f tens_pow_metal_int8.air
 
 clean:
-	rm -f tens_hash tens_pow tens_pow_metal_int8 *.air *.metallib
+	rm -f tens_hash tens_pow tens_pow_metal_int8 tens_hash_coreml *.air *.metallib
 
 .PHONY: all clean
