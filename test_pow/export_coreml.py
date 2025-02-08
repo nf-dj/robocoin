@@ -47,8 +47,8 @@ def main():
 
     # Define input specifications
     input_specs = [
-        mb.TensorSpec(shape=(batch_size, 256)),  # binary input
-        mb.TensorSpec(shape=(batch_size, 256)),  # noise input
+        mb.TensorSpec(shape=(batch_size, 256)),  # input
+        mb.TensorSpec(shape=(batch_size, 256)),  # noise
     ]
 
     # Generate matrices for all rounds
@@ -58,7 +58,6 @@ def main():
     @mb.program(input_specs=input_specs)
     def matmul_scaled_bias_clamped_relu_prog(input, bias):
         x = input
-        
         # Apply rounds
         for round_num in range(64):
             x = mb.matmul(x=x, y=matrices[round_num])
@@ -75,9 +74,9 @@ def main():
         outputs=[ct.TensorType(name="output")]
     )
 
-    # Save the model
+    # Save as .mlpackage
     mlmodel.save("test_coreml.mlpackage")
-    print("Model saved successfully")
+    print("Model saved as .mlpackage")
 
 if __name__ == "__main__":
     main()
