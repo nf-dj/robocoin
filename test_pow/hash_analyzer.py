@@ -174,14 +174,14 @@ class HashAnalyzer:
         return fig, stats_results
 
 def main():
-    analyzer = HashAnalyzer()
+    analyzer = HashAnalyzer(hash_binary="./tens_hash_np.py")
     
     # Starting input (all zeros)
     input_start = "0" * 64
     
     # Run analysis with fixed seed
     print(f"Using fixed seed: {analyzer.fixed_seed}")
-    fig, stats_results = analyzer.plot_analysis(input_start, num_hashes=1000)
+    fig, stats_results = analyzer.plot_analysis(input_start, num_hashes=100)
     
     # Print statistical test results
     print("\nStatistical Test Results:")

@@ -1,46 +1,21 @@
 #!/usr/bin/env python3
-import argparse, time, struct, sys, threading, ctypes
-import numpy as np
+import sys
 import torch
-import torch.nn as nn
+import ctypes
+import numpy as np
+import time
+import threading
 from Crypto.Cipher import ChaCha20
 
 # Constants
-IN_SIZE = 32         
-BITS = IN_SIZE * 8   
-HIDDEN = 256         
-ROUNDS = 64
-BATCH_SIZE = 1024    
-OPS_PER_HASH = 256 * 256 * 2 * 64  
+OPS_PER_HASH = 256 * 256 * 2 * 64  # Matrix multiply size * rounds
 
 progress_data = {
     "attempts": 0,
-    "best_zero_bits": 0,
+    "best_bits": 0,
     "start_time": time.time(),
     "stop": False
 }
-
-class NoiseGenerator:
-    def __init__(self, batch_size):
-        self.libnoise = ctypes.CDLL("./libnoise.so")
-        self.libnoise.compute_noise_batch.argtypes = [
-            ctypes.POINTER(ctypes.c_uint8),
-            ctypes.POINTER(ctypes.c_float),
-            ctypes.c_int
-        ]
-        self.libnoise.compute_noise_batch.restype = None
-
-        self.batch_size = batch_size
-        self.noise_buffer = np.zeros((batch_size, HIDDEN), dtype=np.float32)
-        self.noise_buffer_torch = torch.zeros((batch_size, HIDDEN), dtype=torch.float32)
-        self.noise_ptr = self.noise_buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-
-    def generate(self, nonces_np, device):
-        nonces_flat = nonces_np.flatten()
-        nonces_ptr = nonces_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
-        self.libnoise.compute_noise_batch(nonces_ptr, self.noise_ptr, self.batch_size)
-        self.noise_buffer_torch.copy_(torch.from_numpy(self.noise_buffer))
-        return self.noise_buffer_torch.to(device)
 
 def count_leading_zero_bits(hash_bytes):
     count = 0
@@ -54,163 +29,158 @@ def count_leading_zero_bits(hash_bytes):
                 count += 1
     return count
 
-def print_hex(hash_bytes):
-    return "".join("{:02x}".format(b) for b in hash_bytes)
+class HashVectorGenerator:
+    def __init__(self, batch_size):
+        self.libnoise = ctypes.CDLL("./libnoise.so")
+        self.libnoise.compute_binary_and_noise_batch.argtypes = [
+            ctypes.POINTER(ctypes.c_uint8),  # inputs
+            ctypes.POINTER(ctypes.c_float),  # binary_out
+            ctypes.POINTER(ctypes.c_float),  # noise_out
+            ctypes.c_int                     # batch_size
+        ]
+        self.libnoise.compute_binary_and_noise_batch.restype = None
 
-def nonces_from_counter(start, count):
-    nonces = []
-    for counter in range(start, start + count):
-        nonce = bytearray(IN_SIZE)
-        nonce[0:8] = struct.pack("<Q", counter)
-        nonces.append(bytes(nonce))
-    return torch.tensor(list(nonces), dtype=torch.uint8)
+        self.batch_size = batch_size
+        self.binary_buffer = np.zeros((batch_size, 256), dtype=np.float32)
+        self.noise_buffer = np.zeros((batch_size, 256), dtype=np.float32)
+        self.binary_buffer_torch = torch.zeros((batch_size, 256), dtype=torch.float32)
+        self.noise_buffer_torch = torch.zeros((batch_size, 256), dtype=torch.float32)
+        
+        self.binary_ptr = self.binary_buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        self.noise_ptr = self.noise_buffer.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-class TensHashMiner(nn.Module):
-    def __init__(self, seed_hex, device, batch_size):
-        super().__init__()
-        self.device = torch.device(device)
-        self.seed = bytes.fromhex(seed_hex)[::-1]
+    def generate(self, input_batch, device):
+        input_flat = input_batch.flatten()
+        input_ptr = input_flat.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
         
-        self.noise_gen = NoiseGenerator(batch_size)
+        self.libnoise.compute_binary_and_noise_batch(
+            input_ptr, 
+            self.binary_ptr, 
+            self.noise_ptr, 
+            self.batch_size
+        )
         
-        total_size = ROUNDS * HIDDEN * HIDDEN
-        cipher = ChaCha20.new(key=self.seed, nonce=b'\0' * 8)
-        random_bytes = cipher.encrypt(b'\0' * total_size)
+        self.binary_buffer_torch.copy_(torch.from_numpy(self.binary_buffer))
+        self.noise_buffer_torch.copy_(torch.from_numpy(self.noise_buffer))
         
-        self.matrices = torch.tensor(
-            [[(random_bytes[r*HIDDEN*HIDDEN + i] % 3) - 1 
-              for i in range(HIDDEN*HIDDEN)] 
-             for r in range(ROUNDS)],
-            dtype=torch.float32, device=self.device
-        ).reshape(ROUNDS, HIDDEN, HIDDEN)
-        
-        self.state = torch.zeros((batch_size, BITS), dtype=torch.float32, device=device)
-        
-    def bytes_to_bits(self, inp):
-        inp_cpu = inp.cpu().numpy()
-        bits_np = np.unpackbits(inp_cpu, axis=1)
-        bits_np = bits_np.reshape(-1, IN_SIZE, 8)
-        bits_np = np.flip(bits_np, axis=2)
-        bits_np = bits_np.reshape(-1, BITS).astype(np.float32)
-        self.state.copy_(torch.from_numpy(bits_np))
-        return self.state
-    
-    def bits_to_bytes(self, bits):
-        B = bits.shape[0]
-        bits = bits.reshape(B, IN_SIZE, 8)
-        bits = torch.flip(bits, dims=[2])
-        bits_cpu = bits.cpu().numpy().astype(np.uint8)
-        packed_np = np.packbits(bits_cpu, axis=2)
-        packed_np = packed_np.reshape(B, IN_SIZE)
-        return torch.from_numpy(packed_np).to(self.device)
-    
-    def forward_batch(self, nonce_batch):
-        state = self.bytes_to_bits(nonce_batch.to(self.device))
-        
-        noise_start = time.time()
-        nonce_np = nonce_batch.cpu().numpy()
-        noise_tensor = self.noise_gen.generate(nonce_np, self.device)
-        noise_time = time.time() - noise_start
-        
-        inference_start = time.time()
-        for r in range(ROUNDS):
-            state = torch.matmul(state, self.matrices[r].t()) + noise_tensor
-            state = torch.remainder(torch.floor(state), 2.0)
-        inference_time = time.time() - inference_start
-        
-        out = self.bits_to_bytes(state)
-        return out, noise_time, inference_time
+        return (
+            self.binary_buffer_torch.to(device),
+            self.noise_buffer_torch.to(device)
+        )
 
-def progress_printer():
+def hex_to_bytes(hex_str):
+    return bytes.fromhex(hex_str)
+
+def generate_ternary_matrix_from_seed(seed, device):
+    input_size, output_size = 256, 256
+    A = torch.zeros((input_size, output_size), dtype=torch.float32, device=device)
+    pos_count = neg_count = 32
+
+    for i in range(input_size):
+        nonce = i.to_bytes(8, 'big')
+        cipher = ChaCha20.new(key=seed, nonce=nonce)
+        
+        rand_bytes = cipher.encrypt(b'\x00' * (output_size * 4))
+        rand_ints = np.frombuffer(rand_bytes, dtype=np.int32)
+        chosen_indices = np.argsort(rand_ints)[:64]
+        
+        rand_bytes_shuffle = cipher.encrypt(b'\x00' * (64 * 4))
+        shuffle_ints = np.frombuffer(rand_bytes_shuffle, dtype=np.int32)
+        shuffle_perm = np.argsort(shuffle_ints)
+        sign_vector = torch.tensor([1] * pos_count + [-1] * neg_count, dtype=torch.float32, device=device)
+        sign_vector = sign_vector[torch.tensor(shuffle_perm, dtype=torch.long, device=device)]
+        
+        A[i, torch.tensor(chosen_indices, dtype=torch.long, device=device)] = sign_vector
+    return A
+
+def binary_tensor_to_bytes(vec):
+    vec = vec.cpu().numpy()
+    bits = ''.join(str(int(bit)) for bit in vec)
+    return bytes(int(bits[i:i+8], 2) for i in range(0, len(bits), 8))
+
+def apply_matrix_and_threshold(binary_vector, ternary_matrix, bias_plus_noise):
+    result = torch.matmul(binary_vector, ternary_matrix)
+    result = 2 * result + bias_plus_noise
+    return (result > 0).float()
+
+def print_progress():
     while not progress_data["stop"]:
         now = time.time()
         total_time = now - progress_data["start_time"]
         attempts = progress_data["attempts"]
-        best = progress_data["best_zero_bits"]
+        best_bits = progress_data["best_bits"]
         hr = attempts / total_time if total_time > 0 else 0
         tops = (hr * OPS_PER_HASH) / 1e12
         status = ("  {:4.0f}s    {:7.0f} h/s    {:10.6f} TOPS    Total: {:12d}    Best Bits: {:3d}"
-                  "\r").format(total_time, hr, tops, attempts, best)
+                  "\r").format(total_time, hr, tops, attempts, best_bits)
         print(status, end="", flush=True)
         time.sleep(1)
 
-def main():
-    parser = argparse.ArgumentParser(description="TensHash Miner (PyTorch with C noise generation)")
-    parser.add_argument("seed", help="64 hex character seed")
-    parser.add_argument("difficulty", type=int, help="Number of leading 0 bits required (1-256)")
-    parser.add_argument("--batch_size", type=int, default=BATCH_SIZE, help="Number of nonces per batch")
-    parser.add_argument("--device", default="cuda", help="Device to run on (cuda, mps, cpu)")
-    args = parser.parse_args()
+def find_pow(ternary_matrix, target_bytes, batch_size=1024, device='mps'):
+    target = int.from_bytes(target_bytes, 'big')
+    vector_gen = HashVectorGenerator(batch_size)
+    # Pre-calculate bias since it only depends on ternary matrix
+    bias = -torch.sum(ternary_matrix, dim=0)
     
-    if len(args.seed) != 64:
-        sys.exit("Seed must be 64 hex characters")
-    if args.difficulty < 1 or args.difficulty > 256:
-        sys.exit("Difficulty must be between 1 and 256")
-    
-    device = args.device.lower()
-    if device == "cuda" and not torch.cuda.is_available():
-        if torch.backends.mps.is_available():
-            print("CUDA not available; using MPS instead.")
-            device = "mps"
-        else:
-            print("CUDA not available; using CPU instead.")
-            device = "cpu"
-    elif device == "mps" and not torch.backends.mps.is_available():
-        print("MPS not available; using CPU instead.")
-        device = "cpu"
-    
-    print("Mining with PyTorch on device:", device)
-    print("  Seed:", args.seed)
-    print("  Difficulty: {} leading 0 bits".format(args.difficulty))
-    
-    miner = TensHashMiner(args.seed, device, args.batch_size)
-    miner.eval()
-    
-    progress_thread = threading.Thread(target=progress_printer, daemon=True)
+    progress_thread = threading.Thread(target=print_progress, daemon=True)
     progress_thread.start()
     
-    attempts = 0
-    solution_found = False
-    solution_nonce = None
-    solution_hash = None
-    
-    while not solution_found:
-        nonce_batch = nonces_from_counter(attempts, args.batch_size)
-        attempts += args.batch_size
-        progress_data["attempts"] = attempts
+    try:
+        while True:
+            input_batch = torch.randint(0, 256, (batch_size, 32), dtype=torch.uint8)
+            
+            # Generate binary and noise vectors for entire batch using C function
+            binary_vectors, noise_vectors = vector_gen.generate(input_batch.numpy(), device)
+            
+            # Process each input in batch
+            for i in range(batch_size):
+                input_bytes = input_batch[i].numpy().tobytes()
+                binary_vector = binary_vectors[i]
+                bias_plus_noise = bias + noise_vectors[i]  # Pre-calculate for all rounds
+                
+                output_vector = binary_vector
+                for _ in range(64):
+                    output_vector = apply_matrix_and_threshold(output_vector, ternary_matrix, bias_plus_noise)
+                
+                output_bytes = binary_tensor_to_bytes(output_vector)
+                output_int = int.from_bytes(output_bytes, 'big')
+                
+                progress_data["attempts"] += 1
+                zeros = count_leading_zero_bits(output_bytes)
+                if zeros > progress_data["best_bits"]:
+                    progress_data["best_bits"] = zeros
+                
+                if output_int < target:
+                    progress_data["stop"] = True
+                    progress_thread.join()
+                    print("\nSolution found!")
+                    return input_bytes.hex()
+    except KeyboardInterrupt:
+        progress_data["stop"] = True
+        progress_thread.join()
+        print("\nMining stopped by user")
+        sys.exit(0)
+
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: tens_pow_pytorch.py <32-byte-hex-seed> <32-byte-hex-target>")
+        sys.exit(1)
         
-        with torch.no_grad():
-            out_batch, noise_t, infer_t = miner.forward_batch(nonce_batch)
-        
-        out_batch_cpu = out_batch.cpu().numpy()
-        nonce_batch_cpu = nonce_batch.cpu().numpy()
-        
-        for i in range(args.batch_size):
-            hash_bytes = bytes(out_batch_cpu[i].tolist())
-            hash_disp = bytes(out_batch_cpu[i].tolist())[::-1]
-            zeros = count_leading_zero_bits(hash_disp)
-            if zeros > progress_data["best_zero_bits"]:
-                progress_data["best_zero_bits"] = zeros
-            if zeros >= args.difficulty:
-                solution_found = True
-                nonce_bytes = bytes(nonce_batch_cpu[i].tolist())
-                solution_nonce = nonce_bytes[::-1]
-                solution_hash = hash_disp
-                break
+    seed = hex_to_bytes(sys.argv[1])
+    target_bytes = hex_to_bytes(sys.argv[2])
     
-    progress_data["stop"] = True
-    progress_thread.join()
+    if len(seed) != 32 or len(target_bytes) != 32:
+        print("Error: Both seed and target must be 32 bytes (64 hex chars)")
+        sys.exit(1)
+
+    device = torch.device('mps')
+    print(f"Mining with PyTorch on device: {device}")
+    print(f"Seed: {seed.hex()}")
+    print(f"Target: {target_bytes.hex()}")
     
-    total_time = time.time() - progress_data["start_time"]
-    print("\n\nSolution found!")
-    print("Nonce:", print_hex(solution_nonce))
-    print("Hash: ", print_hex(solution_hash))
-    print("Stats:")
-    print("  Time: {:.1f} seconds".format(total_time))
-    print("  Total hashes: {}".format(attempts))
-    print("  Avg hash rate: {:.1f} h/s".format(attempts / total_time))
-    tops_overall = ((attempts / total_time) * OPS_PER_HASH) / 1e12
-    print("  Avg TOPS: {:.6f}".format(tops_overall))
+    ternary_matrix = generate_ternary_matrix_from_seed(seed, device)
+    solution = find_pow(ternary_matrix, target_bytes)
+    print(f"Solution: {solution}")
 
 if __name__ == "__main__":
     main()
