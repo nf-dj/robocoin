@@ -373,6 +373,11 @@ void print_bit_array(const char* label, const uint8_t* bits, size_t len) {
 void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices,
                           HashBuffers* buffers, uint8_t output[IN_SIZE]) {
 
+    fprintf(stderr,"input: ");
+    for (int i = 0; i < IN_SIZE; i++)
+        fprintf(stderr,"%02x", input[i]);
+    fprintf(stderr,"\n");
+
 	compute_binary_and_noise_vectors(input, buffers->state, buffers->noise);
     print_bit_array("input", buffers->state, HIDDEN);
     print_bit_array("noise", buffers->noise, HIDDEN);
@@ -419,8 +424,8 @@ int hexchar_to_int(char c) {
 int parse_hex(const char *hex, size_t hex_len, uint8_t *out, size_t out_len) {
     if (hex_len != out_len * 2) return -1;
     for (size_t i = 0; i < out_len; i++) {
-        int hi = hexchar_to_int(hex[2 * (out_len - 1 - i)]);
-        int lo = hexchar_to_int(hex[2 * (out_len - 1 - i) + 1]);
+        int hi = hexchar_to_int(hex[2 * i]);
+        int lo = hexchar_to_int(hex[2 * i + 1]);
         if (hi < 0 || lo < 0) return -1;
         out[i] = (hi << 4) | lo;
     }
@@ -477,7 +482,7 @@ int main(int argc, char *argv[]) {
     tens_hash(input, seed, output, impl_type);
 
     for (int i = 0; i < IN_SIZE; i++)
-        printf("%02x", output[IN_SIZE-1-i]);
+        printf("%02x", output[i]);
     printf("\n");
 
     return 0;

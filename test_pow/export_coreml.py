@@ -15,7 +15,7 @@ def parse_args():
     return parser.parse_args()
 
 def hex_to_bytes(hex_str):
-    return bytes.fromhex(hex_str)[::-1]
+    return bytes.fromhex(hex_str)
 
 def generate_ternary_matrix_from_seed(seed, round_num):
     """Generate a 256x256 ternary matrix using the same method as tens_hash_np.py but with round number in nonce"""

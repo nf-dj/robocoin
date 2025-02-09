@@ -3,6 +3,9 @@
 #import <os/log.h>
 #import <sodium.h>
 
+// Debug flag
+static BOOL debugMode = NO;
+
 #define INPUT_SIZE 32
 #define VECTOR_SIZE 256
 #define NOISE_SIZE 256
@@ -44,27 +47,38 @@ void generate_sequential_nonces(uint8_t *outputs, uint64_t start_nonce, int batc
     for (int i = 0; i < batch_size; i++) {
         // Zero out the full input
         memset(outputs + (i * INPUT_SIZE), 0, INPUT_SIZE);
-        
-        // Write sequential nonce to first 8 bytes in LSB order
+        // Write sequential nonce to last 8 bytes (LSB)
         uint64_t nonce = start_nonce + i;
         for (int j = 0; j < 8; j++) {
-            outputs[(i * INPUT_SIZE) + j] = (nonce >> (8 * j)) & 0xFF;
+            outputs[(i * INPUT_SIZE) + (24 + j)] = (nonce >> (8 * (7 - j))) & 0xFF;
         }
     }
 }
 
-int count_trailing_zeros(MLMultiArray *output, NSInteger row) {
+// Helper function to print vectors
+void print_vector(const char *label, float *vector, int size) {
+    printf("%s: [", label);
+    for (int i = 0; i < size; i++) {
+        printf("%.0f", vector[i]);
+        if (i < size - 1) printf(", ");
+        if (i > 20) {
+            printf("...");
+            break;
+        }
+    }
+    printf("]\n");
+}
+
+int count_leading_zeros(MLMultiArray *output, NSInteger row) {
     int zeros = 0;
-    
-    // Check each bit from the end until we find a 1
-    for (NSInteger i = 255; i >= 0; i--) {
+    // Check each bit from the start until we find a 1
+    for (NSInteger i = 0; i < 256; i++) {
         if ([output[(row * 256) + i] intValue] == 0) {
             zeros++;
         } else {
             break;
         }
     }
-    
     return zeros;
 }
 
@@ -110,6 +124,19 @@ int count_trailing_zeros(MLMultiArray *output, NSInteger row) {
         // Generate binary and noise vectors
         compute_binary_and_noise_batch(input_batch, binary_data, noise_data, (int)batchSize);
         
+        // Debug output for first vectors in batch
+        if (debugMode) {
+            // Print nonce as 32-byte hex
+            printf("Nonce: %016llx", startNonce);
+            // Last 24 bytes as zeros
+            for (int i = 0; i < 24; i++) {
+                printf("00");
+            }
+            printf("\n");
+            print_vector("First input vector", binary_data, VECTOR_SIZE);
+            print_vector("First noise vector", noise_data, NOISE_SIZE);
+        }
+        
         free(input_batch);
         
         self.featureNames = [NSSet setWithArray:@[@"input", @"noise"]];
@@ -129,8 +156,9 @@ int count_trailing_zeros(MLMultiArray *output, NSInteger row) {
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
-        if (argc != 2) {
-            NSLog(@"Usage: %s <difficulty>", argv[0]);
+        // Parse arguments
+        if (argc < 2) {
+            NSLog(@"Usage: %s [-d] <difficulty>", argv[0]);
             return 1;
         }
         
@@ -139,8 +167,19 @@ int main(int argc, const char * argv[]) {
             return 1;
         }
         
+        // Parse arguments
+        int argIndex = 1;
+        if (strcmp(argv[argIndex], "-d") == 0) {
+            debugMode = YES;
+            argIndex++;
+            if (argIndex >= argc) {
+                NSLog(@"Missing difficulty parameter");
+                return 1;
+            }
+        }
+        
         // Parse difficulty
-        int target_difficulty = atoi(argv[1]);
+        int target_difficulty = atoi(argv[argIndex]);
         
         // Configure compute units
         MLModelConfiguration *config = [[MLModelConfiguration alloc] init];
@@ -163,7 +202,7 @@ int main(int argc, const char * argv[]) {
             return 1;
         }
         
-        NSLog(@"Mining with difficulty: %d", target_difficulty);
+        NSLog(@"Mining with difficulty: %d%@", target_difficulty, debugMode ? @" (Debug mode enabled)" : @"");
         
         // Mining parameters
         NSInteger batchSize = 8192;
@@ -179,9 +218,9 @@ int main(int argc, const char * argv[]) {
         dispatch_source_set_event_handler(timer, ^{
             NSTimeInterval elapsed = -[startTime timeIntervalSinceNow];
             double hashrate = totalHashes / elapsed;
-            // Operations per inference: matrix muls (64 * 256 * 256 * 2) + other ops (4 * 256)
-            NSInteger numOperations = (64 * 256 * 256 * 2 + 4 * 256) * batchSize;
-            double tops = (numOperations * hashrate) / 1e12;
+            // TOPS = (hashes_per_second * OPS_PER_HASH) / 1e12
+            // where OPS_PER_HASH = 64*256*256*2 + 4*256
+            double tops = (hashrate * (64.0 * 256 * 256 * 2 + 4 * 256)) / 1e12;
             NSLog(@"Nonce: %llu | Hashrate: %.2f H/s | TOPS: %.2f | Best difficulty: %d", 
                   nonce, hashrate, tops, best_difficulty);
         });
@@ -218,9 +257,28 @@ int main(int argc, const char * argv[]) {
                 
                 MLMultiArray *outputArray = [outputFeature multiArrayValue];
                 
+                // Debug output for first output vector
+                if (debugMode) {
+                    float *output_data = (float *)outputArray.dataPointer;
+                    print_vector("First output vector", output_data, VECTOR_SIZE);
+                    
+                    // Convert first output to hex
+                    uint8_t first_output_bytes[32] = {0};
+                    for (NSInteger j = 0; j < 256; j++) {
+                        NSInteger bitIndex = 7 - j % 8;
+                        NSInteger byteIndex = j / 8;
+                        first_output_bytes[byteIndex] |= ([outputArray[j] intValue] & 1) << bitIndex;
+                    }
+                    NSMutableString *outputHex = [NSMutableString string];
+                    for (int j = 0; j < 32; j++) {
+                        [outputHex appendFormat:@"%02x", first_output_bytes[j]];
+                    }
+                    NSLog(@"First output (hex): %@", outputHex);
+                }
+                
                 // Check each output in batch
                 for (NSInteger i = 0; i < batchSize; i++) {
-                    int zeros = count_trailing_zeros(outputArray, i);
+                    int zeros = count_leading_zeros(outputArray, i);
                     if (zeros > best_difficulty) {
                         best_difficulty = zeros;
                     }
@@ -249,7 +307,7 @@ int main(int argc, const char * argv[]) {
                         uint8_t output_bytes[32] = {0};
                         for (NSInteger j = 0; j < 256; j++) {
                             NSInteger bitIndex = 7 - j % 8;
-                            NSInteger byteIndex = 31 - (j / 8); // Store in reverse byte order
+                            NSInteger byteIndex = j / 8;
                             output_bytes[byteIndex] |= ([outputArray[(i * 256) + j] intValue] & 1) << bitIndex;
                         }
                         for (int j = 0; j < 32; j++) {
