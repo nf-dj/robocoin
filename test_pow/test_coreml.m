@@ -29,6 +29,7 @@ void compute_binary_and_noise_vectors(const uint8_t *input, float *binary_out, f
     // Convert second hash to noise vector
     for (int i = 0; i < NOISE_SIZE; i++) {
         noise_out[i] = (int8_t)((second_hash[i / 8] >> (7 - (i % 8))) & 1);
+        //noise_out[i] = noise_out[i]*3 - 1; // XXX
     }
 }
 
@@ -248,8 +249,9 @@ int main(int argc, const char * argv[]) {
                 }
                 
                 // Get output feature
-                //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
-                MLFeatureValue *outputFeature = [output featureValueForName:@"sub_63"];
+                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
+                //MLFeatureValue *outputFeature = [output featureValueForName:@"sub_63"];
+                //MLFeatureValue *outputFeature = [output featureValueForName:@"cos_63"];
                 if (!outputFeature) {
                     NSLog(@"Could not find output feature");
                     continue;
@@ -283,7 +285,8 @@ int main(int argc, const char * argv[]) {
                         best_difficulty = zeros;
                     }
                     
-                    if (zeros >= target_difficulty) {
+                    //if (zeros >= target_difficulty) {
+                    if (0) {
                         // Found a solution!
                         uint64_t solution_nonce = nonce + i;
                         NSLog(@"\nSolution found!");

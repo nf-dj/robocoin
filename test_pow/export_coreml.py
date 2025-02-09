@@ -3,9 +3,10 @@ import numpy as np
 from coremltools.converters.mil import Builder as mb
 import argparse
 from Crypto.Cipher import ChaCha20
+from collections import deque
 
-POS_COUNT=16
-NEG_COUNT=16
+
+SIZE=256
 ROUNDS=64
 BATCH_SIZE = 8192
 
@@ -19,41 +20,43 @@ def hex_to_bytes(hex_str):
     return bytes.fromhex(hex_str)
 
 def generate_ternary_matrix_from_seed(seed, round_num):
-    """Generate a 256x256 ternary matrix using the same method as tens_hash_np.py but with round number in nonce"""
-    input_size, output_size = 256, 256
-    total_nonzero = POS_COUNT + NEG_COUNT
+    """
+    Generate a 256x256 ternary matrix A (dtype float32) with entries in {-1, 0, 1}
+    such that each row has exactly one +1 and one -1, and each column also gets exactly
+    one +1 and one -1.
+
+    The plus ones are assigned using a random permutation, and the minus ones are assigned
+    using a random derangement (i.e. a permutation with no fixed points relative to the plus
+    permutation). This ensures that in each row the -1 is placed in a column different from the +1.
     
-    # Use round number in nonce
-    nonce = round_num.to_bytes(4, 'big') + b'\x00' * 4  # 4 bytes for round, 4 bytes zeros
-    cipher = ChaCha20.new(key=seed, nonce=nonce)
+    The randomness is seeded using the provided seed (a bytes object) and the round number.
+    """
+    # Combine the seed bytes and round number into an integer seed.
+    seed_int = int.from_bytes(seed, 'big') ^ (round_num + 0xABCDEF)
+    rng = np.random.default_rng(seed_int)
     
-    # Generate all random values at once using ChaCha20
-    total_rand_vals = input_size * output_size
-    rand_bytes = cipher.encrypt(b'\x00' * (total_rand_vals * 4))
-    rand_vals = np.frombuffer(rand_bytes, dtype=np.uint32).reshape(input_size, output_size)
+    # Generate a random permutation for plus ones.
+    plus_perm = rng.permutation(SIZE)
     
-    # Initialize the matrix
-    A = np.zeros((input_size, output_size), dtype=np.float32)
+    # Generate a random permutation for minus ones that is a derangement relative to plus_perm.
+    # (i.e. for every row i, minus_perm[i] != plus_perm[i])
+    while True:
+        minus_perm = rng.permutation(SIZE)
+        if np.all(minus_perm != plus_perm):
+            break
+
+    print("plus_perm",plus_perm)
+    print("minus_perm",minus_perm)
+
+    # Create the matrix with zeros.
+    A = np.zeros((SIZE, SIZE), dtype=np.int8)
     
-    # Pre-generate sign array
-    base_signs = np.array([1] * POS_COUNT + [-1] * NEG_COUNT, dtype=np.float32)
-    
-    # Process each row
-    for i in range(input_size):
-        # Sort indices based on random values
-        chosen_indices = np.argsort(rand_vals[i])[:total_nonzero]
-        
-        # Place signs at sorted positions
-        A[i, chosen_indices] = base_signs
-    
-    # Verify the matrix
-    for i in range(input_size):
-        pos_count_actual = np.sum(A[i] == 1)
-        neg_count_actual = np.sum(A[i] == -1)
-        if pos_count_actual != POS_COUNT or neg_count_actual != NEG_COUNT:
-            raise ValueError(f"Row {i} has {pos_count_actual} +1s and {neg_count_actual} -1s (expected 32 each)")
-    
-    return A
+    # Place the +1's and -1's.
+    for i in range(SIZE):
+        A[i, plus_perm[i]] = 1
+        A[i, minus_perm[i]] = -1
+
+    return A.astype(np.float32)
 
 def main():
     args = parse_args()
@@ -77,31 +80,23 @@ def main():
     print("bias[0]", biases[0])
     print("bias[-1]", biases[-1])
 
+    # Define the MIL program
     @mb.program(input_specs=input_specs)
-    def matmul_scaled_bias_mod2_prog(input, noise):
+    def matmul_scaled_bias_clamped_relu_prog(input, noise):
         x = input
         # Apply rounds
         for round_num in range(ROUNDS):
             x = mb.matmul(x=x, y=matrices[round_num])
             #x = mb.mul(x=x, y=2.0)
+            x = mb.mul(x=x, y=0.0) # XXX
             #x = mb.add(x=x, y=biases[round_num])
             x = mb.add(x=x, y=noise)
-            # Compute mod 2:
-            #   Divide by 2
-            x_div = mb.mul(x=x, y=0.5)
-            #   Cast quotient to int32 (truncating to floor for nonnegative values)
-            x_int = mb.cast(x=x_div, dtype="int32")
-            #   Cast back to float (fp32)
-            x_int_float = mb.cast(x=x_int, dtype="fp32")
-            #   Multiply the integer quotient (as float) by 2
-            x_mul = mb.mul(x=x_int_float, y=2.0)
-            #   Subtract from the original x to get the remainder
-            x = mb.sub(x=x, y=x_mul)
+            x = mb.clip(x=x, alpha=0.0, beta=1.0)
         return x
 
     # Convert to Core ML model with FP16 precision
     mlmodel = ct.convert(
-        matmul_scaled_bias_mod2_prog,
+        matmul_scaled_bias_clamped_relu_prog,
         convert_to="mlprogram",
         compute_precision=ct.precision.FLOAT16,
         outputs=[ct.TensorType(name="output")]

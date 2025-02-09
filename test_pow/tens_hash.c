@@ -9,8 +9,8 @@
 
 #define IN_SIZE 32
 #define HIDDEN 256
-#define ROUNDS 64
-//#define ROUNDS 1
+//#define ROUNDS 64
+#define ROUNDS 1
 
 typedef enum {
     IMPL_INT8 = 0,
@@ -38,6 +38,7 @@ static void matrix_multiply_relu_int8(int8_t **weights, int8_t *biases, uint8_t 
         }
         sum *= 2;
         sum += biases[i];
+        sum = 0; // XXX
         sum += noise[i];
         //fprintf(stderr,"%d ",sum);
         out[i] = (sum > 0) ? 1 : 0;
@@ -261,7 +262,7 @@ static void generate_matrices(int8_t **matrices[ROUNDS], int8_t *biases[ROUNDS],
     }
 
     print_weights_and_bias(matrices[0], biases[0]);
-    print_weights_and_bias(matrices[63], biases[63]);
+    //print_weights_and_bias(matrices[63], biases[63]);
     
     free(rand_vals);
 }
