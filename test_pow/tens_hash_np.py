@@ -17,32 +17,45 @@ def binary_vector_to_bytes(vec):
 
 def generate_ternary_matrix_from_seed(seed):
     input_size, output_size = 256, 256
-    A = np.zeros((input_size, output_size), dtype=int)
     pos_count = neg_count = 32
-
+    total_nonzero = pos_count + neg_count
+    
+    # Generate all random values at once using ChaCha20
+    nonce = b'\x00' * 8  # 8-byte zero nonce for PyCrypto ChaCha20
+    cipher = ChaCha20.new(key=seed, nonce=nonce)
+    total_rand_vals = input_size * output_size
+    rand_bytes = cipher.encrypt(b'\x00' * (total_rand_vals * 4))
+    rand_vals = np.frombuffer(rand_bytes, dtype=np.uint32).reshape(input_size, output_size)
+    
+    # Initialize the matrix and column sums
+    A = np.zeros((input_size, output_size), dtype=np.int8)
+    col_sums = np.zeros(output_size, dtype=np.int32)
+    
+    # Pre-generate sign array
+    base_signs = np.array([1] * pos_count + [-1] * neg_count)
+    
+    # Process each row
     for i in range(input_size):
-        nonce = i.to_bytes(8, 'big')
-        cipher = ChaCha20.new(key=seed, nonce=nonce)
+        # Sort indices based on random values
+        chosen_indices = np.argsort(rand_vals[i])[:total_nonzero]
         
-        rand_bytes = cipher.encrypt(b'\x00' * (output_size * 4))
-        rand_ints = np.frombuffer(rand_bytes, dtype=np.uint32)
-        chosen_indices = np.argsort(rand_ints)[:64]
-        
-        rand_bytes_shuffle = cipher.encrypt(b'\x00' * (64 * 4))
-        shuffle_ints = np.frombuffer(rand_bytes_shuffle, dtype=np.uint32)
-        shuffle_perm = np.argsort(shuffle_ints)
-        sign_vector = np.array([1] * pos_count + [-1] * neg_count)
-        sign_vector = sign_vector[shuffle_perm]
-        
-        A[i, chosen_indices] = sign_vector
-    return A
+        # Place signs at sorted positions and update column sums
+        A[i, chosen_indices] = base_signs
+        col_sums += A[i]
+    
+    # Verify the matrix
+    for i in range(input_size):
+        pos_count_actual = np.sum(A[i] == 1)
+        neg_count_actual = np.sum(A[i] == -1)
+        if pos_count_actual != pos_count or neg_count_actual != neg_count:
+            raise ValueError(f"Row {i} has {pos_count_actual} +1s and {neg_count_actual} -1s (expected 32 each)")
+    
+    return A, -col_sums  # Return both matrix and biases
 
-def apply_matrix_and_threshold(binary_vector, noise_vector, ternary_matrix):
-    binary_vectors = np.vstack([binary_vector, noise_vector])
-    result = np.matmul(binary_vectors, ternary_matrix)
-    bias = -np.sum(ternary_matrix, axis=0)
-    result = 2 * result + bias + noise_vector
-    return np.where(result[0] > 0, 1, 0)
+def apply_matrix_and_threshold(binary_vector, noise_vector, matrix, biases):
+    result = np.matmul(binary_vector, matrix)
+    result = 2 * result + biases + noise_vector
+    return np.where(result > 0, 1, 0)
 
 def main():
     if len(sys.argv) != 3:
@@ -61,11 +74,11 @@ def main():
     
     binary_vector = bytes_to_binary_vector(input_hash_bytes)
     noise_vector = bytes_to_binary_vector(noise_bytes)
-    ternary_matrix = generate_ternary_matrix_from_seed(seed)
+    matrix, biases = generate_ternary_matrix_from_seed(seed)
     
     output_vector = binary_vector
-    for _ in range(64):
-        output_vector = apply_matrix_and_threshold(output_vector, noise_vector, ternary_matrix)
+    for _ in range(1):
+        output_vector = apply_matrix_and_threshold(output_vector, noise_vector, matrix, biases)
     output_bytes = binary_vector_to_bytes(output_vector)
     
     print(output_bytes.hex())

@@ -32,15 +32,17 @@ typedef struct {
 
 static void matrix_multiply_relu_int8(int8_t **weights, int8_t *biases, uint8_t *in, uint8_t *out, int8_t *noise, int rows, int cols) {
     for (int i = 0; i < rows; i++) {
-        int32_t sum = 0;
+        int8_t sum = 0;
         for (int j = 0; j < cols; j++) {
             sum += weights[i][j] * in[j];
         }
         sum *= 2;
         sum += biases[i];
         sum += noise[i];
+        fprintf(stderr,"%d ",sum);
         out[i] = (sum > 0) ? 1 : 0;
     }
+    fprintf(stderr,"\n");
 }
 
 static void matrix_multiply_relu_fp32(int8_t **weights, int8_t *biases, uint8_t *in, uint8_t *out, int8_t *noise, int rows, int cols) {
@@ -116,6 +118,38 @@ static int compare_pairs(const void *a, const void *b) {
     return 0;
 }
 
+static void verify_matrix(int8_t **matrix, int8_t *biases, int round) {
+    // Verify row counts
+    for (int i = 0; i < HIDDEN; i++) {
+        int pos_count = 0;
+        int neg_count = 0;
+        for (int j = 0; j < HIDDEN; j++) {
+            if (matrix[i][j] == 1) pos_count++;
+            if (matrix[i][j] == -1) neg_count++;
+        }
+        if (pos_count != 32 || neg_count != 32) {
+            fprintf(stderr, "Error in round %d, row %d: found %d +1s and %d -1s (expected 32 each)\n",
+                    round, i, pos_count, neg_count);
+            exit(1);
+        }
+    }
+
+    // Verify column sums match negative biases
+    for (int j = 0; j < HIDDEN; j++) {
+        int32_t col_sum = 0;
+        for (int i = 0; i < HIDDEN; i++) {
+            col_sum += matrix[i][j];
+        }
+        if (col_sum != -biases[j]) {
+            fprintf(stderr, "Error in round %d, col %d: sum=%d but bias=%d\n",
+                    round, j, col_sum, -biases[j]);
+            exit(1);
+        }
+    }
+    
+    fprintf(stderr, "Round %d matrix verification passed\n", round);
+}
+
 static void generate_matrices(int8_t **matrices[ROUNDS], int8_t *biases[ROUNDS], uint8_t seed[32]) {
     const int pos_count = 32;  // Number of +1s per row
     const int neg_count = 32;  // Number of -1s per row
@@ -136,6 +170,9 @@ static void generate_matrices(int8_t **matrices[ROUNDS], int8_t *biases[ROUNDS],
     sort_pair_t pairs[HIDDEN];
 
     for (int r = 0; r < ROUNDS; r++) {
+        // Initialize column sums to zero
+        int32_t col_sums[HIDDEN] = {0};
+        
         for (int i = 0; i < HIDDEN; i++) {
             // Clear the row
             memset(matrices[r][i], 0, HIDDEN * sizeof(int8_t));
@@ -152,13 +189,22 @@ static void generate_matrices(int8_t **matrices[ROUNDS], int8_t *biases[ROUNDS],
             // Sort pairs by value
             qsort(pairs, HIDDEN, sizeof(sort_pair_t), compare_pairs);
             
-            // Place signs at the sorted positions
+            // Place signs at the sorted positions and update column sums
             for (int j = 0; j < total_nonzero; j++) {
-                matrices[r][i][pairs[j].idx] = base_signs[j];
+                int8_t sign = base_signs[j];
+                int col = pairs[j].idx;
+                matrices[r][i][col] = sign;
+                col_sums[col] += sign;
             }
-
-            biases[r][i]=0; // XXX
         }
+        
+        // Set biases as negative column sums
+        for (int i = 0; i < HIDDEN; i++) {
+            biases[r][i] = -col_sums[i];
+        }
+
+        // Verify the matrix and biases for this round
+        verify_matrix(matrices[r], biases[r], r);
     }
     
     free(rand_vals);
@@ -240,6 +286,11 @@ void compute_binary_and_noise_vectors(const uint8_t *input, uint8_t *binary_out,
     for (int i = 0; i < HIDDEN; i++) {
         binary_out[i] = (uint8_t)((first_hash[i / 8] >> (7 - (i % 8))) & 1);
     }
+    fprintf(stderr,"binary_out: ");
+    for (int i = 0; i < HIDDEN; i++) {
+        fprintf(stderr,"%d ", binary_out[i]);
+    }
+    fprintf(stderr,"\n");
     
     // Second SHA256 for noise
     crypto_hash_sha256(second_hash, first_hash, IN_SIZE);
@@ -248,6 +299,11 @@ void compute_binary_and_noise_vectors(const uint8_t *input, uint8_t *binary_out,
     for (int i = 0; i < HIDDEN; i++) {
         noise_out[i] = (int8_t)((second_hash[i % 32] >> (i % 8)) & 1);
     }
+    fprintf(stderr,"noise_out: ");
+    for (int i = 0; i < HIDDEN; i++) {
+        fprintf(stderr,"%d ", noise_out[i]);
+    }
+    fprintf(stderr,"\n");
 }
 
 void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices,
