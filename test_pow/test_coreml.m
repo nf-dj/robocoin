@@ -45,10 +45,10 @@ void generate_sequential_nonces(uint8_t *outputs, uint64_t start_nonce, int batc
         // Zero out the full input
         memset(outputs + (i * INPUT_SIZE), 0, INPUT_SIZE);
         
-        // Write sequential nonce to last 8 bytes
+        // Write sequential nonce to first 8 bytes in LSB order
         uint64_t nonce = start_nonce + i;
         for (int j = 0; j < 8; j++) {
-            outputs[(i * INPUT_SIZE) + (INPUT_SIZE - 8) + j] = (nonce >> (8 * (7 - j))) & 0xFF;
+            outputs[(i * INPUT_SIZE) + j] = (nonce >> (8 * j)) & 0xFF;
         }
     }
 }
@@ -156,23 +156,21 @@ int main(int argc, const char * argv[]) {
             NSLog(@"Error compiling model: %@", error);
             return 1;
         }
-        NSLog(@"Model compiled successfully");
         
         MLModel *model = [MLModel modelWithContentsOfURL:compiledUrl configuration:config error:&error];
         if (error) {
             NSLog(@"Error loading model: %@", error);
             return 1;
         }
-        NSLog(@"Model loaded successfully");
-        NSLog(@"Mining with target difficulty: %d leading zeros", target_difficulty);
+        
+        NSLog(@"Mining with difficulty: %d", target_difficulty);
         
         // Mining parameters
-        //NSInteger batchSize = 8192;
-        NSInteger batchSize = 1;
-        uint64_t nonce = 0;
-        uint64_t totalHashes = 0;
-        NSDate *startTime = [NSDate date];
-        int best_difficulty = 0;
+        NSInteger batchSize = 8192;
+        __block uint64_t nonce = 0;
+        __block uint64_t totalHashes = 0;
+        __block NSDate *startTime = [NSDate date];
+        __block int best_difficulty = 0;
         
         // Status display timer - 1 second intervals
         dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
@@ -181,8 +179,11 @@ int main(int argc, const char * argv[]) {
         dispatch_source_set_event_handler(timer, ^{
             NSTimeInterval elapsed = -[startTime timeIntervalSinceNow];
             double hashrate = totalHashes / elapsed;
-            NSLog(@"Nonce: %llu | Hashrate: %.2f H/s | Best difficulty: %d leading zeros", 
-                  nonce, hashrate, best_difficulty);
+            // Operations per inference: matrix muls (64 * 256 * 256 * 2) + other ops (4 * 256)
+            NSInteger numOperations = (64 * 256 * 256 * 2 + 4 * 256) * batchSize;
+            double tops = (numOperations * hashrate) / 1e12;
+            NSLog(@"Nonce: %llu | Hashrate: %.2f H/s | TOPS: %.2f | Best difficulty: %d", 
+                  nonce, hashrate, tops, best_difficulty);
         });
         
         dispatch_resume(timer);
@@ -208,42 +209,14 @@ int main(int argc, const char * argv[]) {
                 }
                 
                 // Get output feature
-                //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
-                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_0"];
+                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
+                //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_0"];
                 if (!outputFeature) {
                     NSLog(@"Could not find output feature");
                     continue;
                 }
                 
                 MLMultiArray *outputArray = [outputFeature multiArrayValue];
-                
-                // Print binary vectors for debugging
-                /*NSMutableString *inputStr = [NSMutableString stringWithString:@"input: ["];
-                NSMutableString *noiseStr = [NSMutableString stringWithString:@"noise: ["];
-                NSMutableString *outputStr = [NSMutableString stringWithString:@"output: ["];
-                
-                // Build input string
-                for (NSInteger j = 0; j < 256; j++) {
-                    [inputStr appendFormat:@"%d", [inputProvider.input[j] intValue]];
-                    if (j < 255) [inputStr appendString:@" "];
-                }
-                [inputStr appendString:@"]\n"];
-                
-                // Build noise string
-                for (NSInteger j = 0; j < 256; j++) {
-                    [noiseStr appendFormat:@"%d", [inputProvider.noise[j] intValue]];
-                    if (j < 255) [noiseStr appendString:@" "];
-                }
-                [noiseStr appendString:@"]\n"];
-                
-                // Build output string
-                for (NSInteger j = 0; j < 256; j++) {
-                    [outputStr appendFormat:@"%d", [outputArray[j] intValue]];
-                    if (j < 255) [outputStr appendString:@" "];
-                }
-                [outputStr appendString:@"]\n"];
-                
-                NSLog(@"%@%@%@", inputStr, noiseStr, outputStr);*/
                 
                 // Check each output in batch
                 for (NSInteger i = 0; i < batchSize; i++) {
@@ -257,7 +230,7 @@ int main(int argc, const char * argv[]) {
                         uint64_t solution_nonce = nonce + i;
                         NSLog(@"\nSolution found!");
                         NSLog(@"Nonce: %llu", solution_nonce);
-                        NSLog(@"Leading zeros: %d", zeros);
+                        NSLog(@"Trailing zeros: %d", zeros);
                         
                         // Print full 32-byte input in hex format
                         NSMutableString *inputHex = [NSMutableString string];

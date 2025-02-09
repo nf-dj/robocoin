@@ -4,10 +4,10 @@ from coremltools.converters.mil import Builder as mb
 import argparse
 from Crypto.Cipher import ChaCha20
 
-#ROUNDS=64
-ROUNDS=1
-#BATCH_SIZE = 8192
-BATCH_SIZE = 1
+ROUNDS=64
+#ROUNDS=1
+BATCH_SIZE = 8192
+#BATCH_SIZE = 1
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Export CoreML model with seed-based matrix generation")
@@ -15,7 +15,7 @@ def parse_args():
     return parser.parse_args()
 
 def hex_to_bytes(hex_str):
-    return bytes.fromhex(hex_str)
+    return bytes.fromhex(hex_str)[::-1]
 
 def generate_ternary_matrix_from_seed(seed, round_num):
     """Generate a 256x256 ternary matrix using the same method as tens_hash_np.py but with round number in nonce"""
@@ -71,8 +71,11 @@ def main():
     # Generate matrices for all rounds
     matrices = [generate_ternary_matrix_from_seed(seed, round_num) for round_num in range(ROUNDS)]
     print("matrix[0]", matrices[0])
+    print("matrix[-1]", matrices[-1])
+
     biases = [-np.sum(matrix, axis=0) for matrix in matrices]
     print("bias[0]", biases[0])
+    print("bias[-1]", biases[-1])
 
     # Define the MIL program
     @mb.program(input_specs=input_specs)

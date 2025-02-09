@@ -39,10 +39,10 @@ static void matrix_multiply_relu_int8(int8_t **weights, int8_t *biases, uint8_t 
         sum *= 2;
         sum += biases[i];
         sum += noise[i];
-        fprintf(stderr,"%d ",sum);
+        //fprintf(stderr,"%d ",sum);
         out[i] = (sum > 0) ? 1 : 0;
     }
-    fprintf(stderr,"\n");
+    //fprintf(stderr,"\n");
 }
 
 static void matrix_multiply_relu_fp32(int8_t **weights, int8_t *biases, uint8_t *in, uint8_t *out, int8_t *noise, int rows, int cols) {
@@ -147,7 +147,7 @@ static void verify_matrix(int8_t **matrix, int8_t *biases, int round) {
         }
     }
     
-    fprintf(stderr, "Round %d matrix verification passed\n", round);
+    //fprintf(stderr, "Round %d matrix verification passed\n", round);
 }
 
 void print_weights_and_bias(int8_t **matrix, int8_t *bias) {
@@ -198,12 +198,11 @@ static void generate_matrices(int8_t **matrices[ROUNDS], int8_t *biases[ROUNDS],
     const int pos_count = 32;  // Number of +1s per row
     const int neg_count = 32;  // Number of -1s per row
     const int total_nonzero = pos_count + neg_count;
-    uint8_t nonce[32] = {0};  // Zero nonce
+    uint8_t nonce[8];  // 4 bytes for round, 4 bytes zeros
     
-    // Generate all random values at once
-    const size_t total_rand_vals = ROUNDS * HIDDEN * HIDDEN;
-    uint32_t *rand_vals = malloc(total_rand_vals * sizeof(uint32_t));
-    crypto_stream_chacha20((uint8_t*)rand_vals, total_rand_vals * sizeof(uint32_t), nonce, seed);
+    // Generate random values per round
+    const size_t round_rand_vals = HIDDEN * HIDDEN;
+    uint32_t *rand_vals = malloc(round_rand_vals * sizeof(uint32_t));
 
     // Pre-generate the sign array
     int8_t base_signs[total_nonzero];
@@ -215,14 +214,24 @@ static void generate_matrices(int8_t **matrices[ROUNDS], int8_t *biases[ROUNDS],
 
     for (int r = 0; r < ROUNDS; r++) {
         // Initialize column sums to zero
-        int32_t col_sums[HIDDEN] = {0};
+        // Create nonce for this round
+    memset(nonce, 0, sizeof(nonce));
+    nonce[3] = r & 0xFF;  // Little-endian round number
+    nonce[2] = (r >> 8) & 0xFF;
+    nonce[1] = (r >> 16) & 0xFF;
+    nonce[0] = (r >> 24) & 0xFF;
+
+    // Generate random values for this round
+    crypto_stream_chacha20((uint8_t*)rand_vals, round_rand_vals * sizeof(uint32_t), nonce, seed);
+
+    int32_t col_sums[HIDDEN] = {0};
         
         for (int i = 0; i < HIDDEN; i++) {
             // Clear the row
             memset(matrices[r][i], 0, HIDDEN * sizeof(int8_t));
             
             // Point to the random values for this row
-            uint32_t *row_rand_vals = rand_vals + (r * HIDDEN * HIDDEN) + (i * HIDDEN);
+            uint32_t *row_rand_vals = rand_vals + (i * HIDDEN);
             
             // Setup pairs for sorting
             for (int j = 0; j < HIDDEN; j++) {
@@ -251,15 +260,8 @@ static void generate_matrices(int8_t **matrices[ROUNDS], int8_t *biases[ROUNDS],
         verify_matrix(matrices[r], biases[r], r);
     }
 
-	fprintf(stderr, "First few weights from first matrix:\n");
-	for (int i = 0; i < 5; i++) {  // first 5 rows
-		for (int j = 0; j < 5; j++) {  // first 5 columns
-			fprintf(stderr, "%d ", matrices[0][i][j]);
-		}
-		fprintf(stderr, "\n");
-	}
-
     print_weights_and_bias(matrices[0], biases[0]);
+    print_weights_and_bias(matrices[63], biases[63]);
     
     free(rand_vals);
 }

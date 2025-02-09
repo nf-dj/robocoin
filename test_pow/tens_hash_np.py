@@ -5,7 +5,7 @@ from Crypto.Cipher import ChaCha20
 import hashlib
 
 def hex_to_bytes(hex_str):
-    return bytes.fromhex(hex_str)
+    return bytes.fromhex(hex_str)[::-1]
 
 def bytes_to_binary_vector(b):
     bits = ''.join([format(x, '08b') for x in b])

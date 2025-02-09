@@ -1,259 +1,271 @@
 #import <Foundation/Foundation.h>
 #import <CoreML/CoreML.h>
-#import <pthread.h>
+#import <os/log.h>
+#import <sodium.h>
 
-// Constants
-const NSUInteger BATCH_SIZE = 128; // Updated to match export script
-const uint64_t OPS_PER_HASH = 256 * 256 * 2 * 64;
+#define INPUT_SIZE 32
+#define VECTOR_SIZE 256
+#define NOISE_SIZE 256
 
-// Progress tracking
-uint64_t totalAttempts = 0;
-uint32_t bestBits = 0;
-NSDate *startTime;
-volatile bool shouldStop = false;
-
-@interface NSData (HexString)
-+ (NSData *)dataWithHexString:(NSString *)hexString;
-@end
-
-@implementation NSData (HexString)
-+ (NSData *)dataWithHexString:(NSString *)hexString {
-    const char *chars = [hexString UTF8String];
-    NSUInteger length = strlen(chars);
-    unsigned char *bytes = malloc(length / 2);
-    if (!bytes) return nil;
+// Noise generation functions from noise_gen.c
+void compute_binary_and_noise_vectors(const uint8_t *input, float *binary_out, float *noise_out) {
+    unsigned char first_hash[crypto_hash_sha256_BYTES];
+    unsigned char second_hash[crypto_hash_sha256_BYTES];
     
-    for (NSUInteger i = 0; i < length; i += 2) {
-        char high = chars[i], low = chars[i + 1];
-        high = (high >= 'a') ? (high - 'a' + 10) : ((high >= 'A') ? (high - 'A' + 10) : (high - '0'));
-        low = (low >= 'a') ? (low - 'a' + 10) : ((low >= 'A') ? (low - 'A' + 10) : (low - '0'));
-        bytes[i/2] = (high << 4) | low;
+    // First SHA256 for binary vector
+    crypto_hash_sha256(first_hash, input, INPUT_SIZE);
+    
+    // Convert first hash to binary vector
+    for (int i = 0; i < VECTOR_SIZE; i++) {
+        binary_out[i] = (float)((first_hash[i / 8] >> (7 - (i % 8))) & 1);
     }
     
-    NSData *data = [NSData dataWithBytes:bytes length:length/2];
-    free(bytes);
-    return data;
+    // Second SHA256 for noise
+    crypto_hash_sha256(second_hash, first_hash, crypto_hash_sha256_BYTES);
+    
+    // Convert second hash to noise vector
+    for (int i = 0; i < NOISE_SIZE; i++) {
+        noise_out[i] = (int8_t)((second_hash[i / 8] >> (7 - (i % 8))) & 1);
+    }
 }
-@end
 
-uint32_t countLeadingZeroBits(const uint8_t *bytes, size_t length) {
-    uint32_t count = 0;
-    for (size_t i = 0; i < length && bytes[i] == 0; i++) count += 8;
-    if (count < length * 8) {
-        uint8_t b = bytes[count / 8];
-        while ((b & 0x80) == 0) {
-            count++;
-            b <<= 1;
+void compute_binary_and_noise_batch(const uint8_t *inputs, float *binary_out, float *noise_out, int batch_size) {
+    #pragma omp parallel for
+    for (int b = 0; b < batch_size; b++) {
+        compute_binary_and_noise_vectors(
+            inputs + (b * INPUT_SIZE),
+            binary_out + (b * VECTOR_SIZE),
+            noise_out + (b * NOISE_SIZE)
+        );
+    }
+}
+
+void generate_sequential_nonces(uint8_t *outputs, uint64_t start_nonce, int batch_size) {
+    for (int i = 0; i < batch_size; i++) {
+        // Zero out the full input
+        memset(outputs + (i * INPUT_SIZE), 0, INPUT_SIZE);
+        
+        // Write sequential nonce to first 8 bytes in LSB order
+        uint64_t nonce = start_nonce + i;
+        for (int j = 0; j < 8; j++) {
+            outputs[(i * INPUT_SIZE) + j] = (nonce >> (8 * j)) & 0xFF;
         }
     }
-    return count;
 }
 
-void *progressMonitorThread(void *arg) {
-    while (!shouldStop) {
-        NSTimeInterval totalTime = [[NSDate date] timeIntervalSinceDate:startTime];
-        double hashRate = totalAttempts / totalTime;
-        double tOps = (hashRate * OPS_PER_HASH) / 1e12;
-        printf("T:%4.0fs H:%7.0f/s TOPS:%6.3f Tot:%12llu Best:%3u\r",
-               totalTime, hashRate, tOps, totalAttempts, bestBits);
-        fflush(stdout);
-        [NSThread sleepForTimeInterval:1.0];
+int count_trailing_zeros(MLMultiArray *output, NSInteger row) {
+    int zeros = 0;
+    
+    // Check each bit from the end until we find a 1
+    for (NSInteger i = 255; i >= 0; i--) {
+        if ([output[(row * 256) + i] intValue] == 0) {
+            zeros++;
+        } else {
+            break;
+        }
     }
-    return NULL;
+    
+    return zeros;
 }
 
-void printMLMultiArray(MLMultiArray *array, const char *name, int limit) {
-    printf("%s: shape=%s count=%lu\n", name, array.shape.description.UTF8String, (unsigned long)array.count);
-    float *data = (float *)array.dataPointer;
-    printf("First %d values: ", limit);
-    for (int i = 0; i < MIN(limit, (int)array.count); i++) {
-        printf("%.1f ", data[i]);
+@protocol MLFeatureProvider;
+
+@interface InputFeatureProvider : NSObject <MLFeatureProvider>
+@property (nonatomic, strong) MLMultiArray *input;
+@property (nonatomic, strong) MLMultiArray *noise;
+@property (nonatomic, strong) NSSet<NSString *> *featureNames;
+@end
+
+@implementation InputFeatureProvider
+- (instancetype)initWithBatchSize:(NSInteger)batchSize startNonce:(uint64_t)startNonce {
+    self = [super init];
+    if (self) {
+        NSError *error = nil;
+        
+        // Create input arrays
+        self.input = [[MLMultiArray alloc] initWithShape:@[@(batchSize), @256]
+                                              dataType:MLMultiArrayDataTypeFloat32
+                                                error:&error];
+        if (error) {
+            NSLog(@"Error creating input array: %@", error);
+            return nil;
+        }
+        
+        self.noise = [[MLMultiArray alloc] initWithShape:@[@(batchSize), @256]
+                                              dataType:MLMultiArrayDataTypeFloat32
+                                                error:&error];
+        if (error) {
+            NSLog(@"Error creating noise array: %@", error);
+            return nil;
+        }
+        
+        // Allocate memory for input batch
+        uint8_t *input_batch = (uint8_t *)malloc(batchSize * INPUT_SIZE);
+        generate_sequential_nonces(input_batch, startNonce, (int)batchSize);
+        
+        // Get pointers to MLMultiArray data
+        float *binary_data = (float *)self.input.dataPointer;
+        float *noise_data = (float *)self.noise.dataPointer;
+        
+        // Generate binary and noise vectors
+        compute_binary_and_noise_batch(input_batch, binary_data, noise_data, (int)batchSize);
+        
+        free(input_batch);
+        
+        self.featureNames = [NSSet setWithArray:@[@"input", @"noise"]];
     }
-    printf("\n");
+    return self;
 }
+
+- (nullable MLFeatureValue *)featureValueForName:(NSString *)featureName {
+    if ([featureName isEqualToString:@"input"]) {
+        return [MLFeatureValue featureValueWithMultiArray:self.input];
+    } else if ([featureName isEqualToString:@"noise"]) {
+        return [MLFeatureValue featureValueWithMultiArray:self.noise];
+    }
+    return nil;
+}
+@end
 
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
         if (argc != 2) {
-            printf("Usage: %s <target-hex>\n", argv[0]);
+            NSLog(@"Usage: %s <difficulty>", argv[0]);
             return 1;
         }
         
-        NSString *targetHex = [NSString stringWithUTF8String:argv[1]];
-        if (targetHex.length != 64) {
-            printf("Error: Target must be 32 bytes (64 hex chars)\n");
+        if (sodium_init() < 0) {
+            NSLog(@"Error initializing libsodium");
             return 1;
         }
         
-        NSData *targetData = [NSData dataWithHexString:targetHex];
-        const uint8_t *targetBytes = targetData.bytes;
+        // Parse difficulty
+        int target_difficulty = atoi(argv[1]);
         
-        printf("Loading model...\n");
-        NSError *error = nil;
+        // Configure compute units
         MLModelConfiguration *config = [[MLModelConfiguration alloc] init];
         config.computeUnits = MLComputeUnitsAll;
         
-        MLModel *model = [MLModel modelWithContentsOfURL:[NSURL fileURLWithPath:@"PowModel.mlmodelc"]
-                                          configuration:config error:&error];
+        // Load and compile model
+        NSString *modelPath = @"test_coreml.mlpackage";
+        NSURL *modelURL = [NSURL fileURLWithPath:modelPath];
+        NSError *error = nil;
+        
+        NSURL *compiledUrl = [MLModel compileModelAtURL:modelURL error:&error];
         if (error) {
-            printf("Error loading model: %s\n", error.description.UTF8String);
+            NSLog(@"Error compiling model: %@", error);
             return 1;
         }
         
-        // Print model description in detail
-        MLModelDescription *modelDesc = model.modelDescription;
-        printf("\nModel Input Descriptions:\n");
-        for (NSString *key in modelDesc.inputDescriptionsByName) {
-            MLFeatureDescription *desc = modelDesc.inputDescriptionsByName[key];
-            printf("%s: %s\n", key.UTF8String, desc.description.UTF8String);
-        }
-        
-        printf("\nModel Output Descriptions:\n");
-        for (NSString *key in modelDesc.outputDescriptionsByName) {
-            MLFeatureDescription *desc = modelDesc.outputDescriptionsByName[key];
-            printf("%s: %s\n", key.UTF8String, desc.description.UTF8String);
-        }
-        
-        NSArray *inputShape = @[@(BATCH_SIZE), @256];
-        printf("\nCreating input arrays with shape: %s\n", inputShape.description.UTF8String);
-        
-        // Create inputs as FP16 arrays
-        MLMultiArray *binaryInput = [[MLMultiArray alloc] initWithShape:inputShape
-                                                              dataType:MLMultiArrayDataTypeFloat16
-                                                                 error:&error];
+        MLModel *model = [MLModel modelWithContentsOfURL:compiledUrl configuration:config error:&error];
         if (error) {
-            printf("Error creating binary input: %s\n", error.description.UTF8String);
+            NSLog(@"Error loading model: %@", error);
             return 1;
         }
         
-        MLMultiArray *noiseInput = [[MLMultiArray alloc] initWithShape:inputShape
-                                                             dataType:MLMultiArrayDataTypeFloat16
-                                                                error:&error];
-        if (error) {
-            printf("Error creating noise input: %s\n", error.description.UTF8String);
-            return 1;
-        }
+        NSLog(@"Mining with difficulty: %d", target_difficulty);
         
-        float *binaryPtr = (float *)binaryInput.dataPointer;
-        float *noisePtr = (float *)noiseInput.dataPointer;
+        // Mining parameters
+        NSInteger batchSize = 8192;
+        __block uint64_t nonce = 0;
+        __block uint64_t totalHashes = 0;
+        __block NSDate *startTime = [NSDate date];
+        __block int best_difficulty = 0;
         
-        startTime = [NSDate date];
-        pthread_t progressThread;
-        pthread_create(&progressThread, NULL, progressMonitorThread, NULL);
+        // Status display timer - 1 second intervals
+        dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+        dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), NSEC_PER_SEC, 0);
         
-        printf("\nStarting inference loop...\n");
-        int debugCounter = 0;
-        NSString *outputKey = nil;
+        dispatch_source_set_event_handler(timer, ^{
+            NSTimeInterval elapsed = -[startTime timeIntervalSinceNow];
+            double hashrate = totalHashes / elapsed;
+            // Operations per inference: matrix muls (64 * 256 * 256 * 2) + other ops (4 * 256)
+            NSInteger numOperations = (64 * 256 * 256 * 2 + 4 * 256) * batchSize;
+            double tops = (numOperations * hashrate) / 1e12;
+            NSLog(@"Nonce: %llu | Hashrate: %.2f H/s | TOPS: %.2f | Best difficulty: %d", 
+                  nonce, hashrate, tops, best_difficulty);
+        });
         
-        // Try to find output key name from model description
-        for (NSString *key in modelDesc.outputDescriptionsByName) {
-            outputKey = key;  // Take the first output key
-            break;
-        }
+        dispatch_resume(timer);
         
-        if (!outputKey) {
-            printf("Error: Could not find output key in model description\n");
-            return 1;
-        }
-        printf("Using output key: %s\n", outputKey.UTF8String);
-        
-        while (!shouldStop) {
+        // Mining loop
+        while (true) {
             @autoreleasepool {
-                // Generate random inputs (0 or 1) for each element
-                for (NSUInteger i = 0; i < BATCH_SIZE * 256; i++) {
-                    binaryPtr[i] = (float)(arc4random_uniform(2));
-                    noisePtr[i] = (float)(arc4random_uniform(2));
-                }
+                // Create new input provider for current batch
+                InputFeatureProvider *inputProvider = [[InputFeatureProvider alloc] 
+                    initWithBatchSize:batchSize 
+                    startNonce:nonce];
                 
-                if (debugCounter < 3) {
-                    printf("\nDebug iteration %d:\n", debugCounter);
-                    printMLMultiArray(binaryInput, "Binary Input", 10);
-                    printMLMultiArray(noiseInput, "Noise Input", 10);
+                if (!inputProvider) {
+                    NSLog(@"Error creating input provider");
+                    continue;
                 }
                 
                 // Run inference
-                NSDictionary *inputDict = @{
-                    @"binary_input": binaryInput,
-                    @"noise_input": noiseInput
-                };
-                
-                MLDictionaryFeatureProvider *inputFeatures = [[MLDictionaryFeatureProvider alloc] 
-                    initWithDictionary:inputDict error:&error];
-                    
+                id<MLFeatureProvider> output = [model predictionFromFeatures:inputProvider error:&error];
                 if (error) {
-                    printf("\nError creating feature provider: %s\n", error.description.UTF8String);
+                    NSLog(@"Error during inference: %@", error);
                     continue;
                 }
                 
-                id<MLFeatureProvider> outputFeatures = [model predictionFromFeatures:inputFeatures error:&error];
-                if (error) {
-                    printf("\nInference error: %s\n", error.description.UTF8String);
+                // Get output feature
+                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
+                //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_0"];
+                if (!outputFeature) {
+                    NSLog(@"Could not find output feature");
                     continue;
                 }
                 
-                MLFeatureValue *outputValue = [outputFeatures featureValueForName:outputKey];
-                if (!outputValue) {
-                    printf("\nNo output value for key %s\n", outputKey.UTF8String);
-                    continue;
-                }
+                MLMultiArray *outputArray = [outputFeature multiArrayValue];
                 
-                MLMultiArray *outputArray = outputValue.multiArrayValue;
-                if (!outputArray) {
-                    printf("\nOutput value exists but no multiarray\n");
-                    continue;
-                }
-                
-                if (debugCounter < 3) {
-                    printMLMultiArray(outputArray, "Output", 10);
-                    debugCounter++;
-                }
-                
-                float *outputPtr = (float *)outputArray.dataPointer;
-                
-                for (NSUInteger i = 0; i < BATCH_SIZE; i++) {
-                    uint8_t outputBytes[32] = {0};
-                    for (NSUInteger j = 0; j < 256; j++) {
-                        if (outputPtr[i * 256 + j] > 0.5) {
-                            outputBytes[j / 8] |= (1 << (7 - (j % 8)));
-                        }
+                // Check each output in batch
+                for (NSInteger i = 0; i < batchSize; i++) {
+                    int zeros = count_trailing_zeros(outputArray, i);
+                    if (zeros > best_difficulty) {
+                        best_difficulty = zeros;
                     }
                     
-                    uint32_t zeros = countLeadingZeroBits(outputBytes, 32);
-                    if (zeros > bestBits) {
-                        bestBits = zeros;
-                    }
-                    
-                    if (memcmp(outputBytes, targetBytes, 32) < 0) {
-                        shouldStop = true;
-                        printf("\nSolution found!\n");
+                    if (zeros >= target_difficulty) {
+                        // Found a solution!
+                        uint64_t solution_nonce = nonce + i;
+                        NSLog(@"\nSolution found!");
+                        NSLog(@"Nonce: %llu", solution_nonce);
+                        NSLog(@"Trailing zeros: %d", zeros);
                         
-                        // Print input in hex
-                        printf("Input hex:  ");
-                        uint8_t inputBytes[32] = {0};
-                        for (NSUInteger j = 0; j < 256; j++) {
-                            if (binaryPtr[i * 256 + j] > 0.5) {
-                                inputBytes[j / 8] |= (1 << (7 - (j % 8)));
-                            }
+                        // Print full 32-byte input in hex format
+                        NSMutableString *inputHex = [NSMutableString string];
+                        // First 24 bytes are zeros
+                        for (int j = 0; j < 24; j++) {
+                            [inputHex appendString:@"00"];
+                        }
+                        // Last 8 bytes are the nonce
+                        for (int j = 0; j < 8; j++) {
+                            [inputHex appendFormat:@"%02x", (uint8_t)(solution_nonce >> (8 * (7 - j))) & 0xFF];
+                        }
+                        NSLog(@"Solution input (hex): %@", inputHex);
+                        
+                        // Convert model output to hex and display (in MSB order)
+                        NSMutableString *outputHex = [NSMutableString string];
+                        uint8_t output_bytes[32] = {0};
+                        for (NSInteger j = 0; j < 256; j++) {
+                            NSInteger bitIndex = 7 - j % 8;
+                            NSInteger byteIndex = 31 - (j / 8); // Store in reverse byte order
+                            output_bytes[byteIndex] |= ([outputArray[(i * 256) + j] intValue] & 1) << bitIndex;
                         }
                         for (int j = 0; j < 32; j++) {
-                            printf("%02x", inputBytes[j]);
+                            [outputHex appendFormat:@"%02x", output_bytes[j]];
                         }
+                        NSLog(@"Model output (hex): %@", outputHex);
                         
-                        // Print output in hex
-                        printf("\nOutput hex: ");
-                        for (int j = 0; j < 32; j++) {
-                            printf("%02x", outputBytes[j]);
-                        }
-                        printf("\n");
-                        pthread_join(progressThread, NULL);
+                        dispatch_source_cancel(timer);
                         return 0;
                     }
                 }
-                totalAttempts += BATCH_SIZE;
+                
+                nonce += batchSize;
+                totalHashes += batchSize;
             }
         }
-        pthread_join(progressThread, NULL);
     }
     return 0;
 }
-
