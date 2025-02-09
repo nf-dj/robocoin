@@ -248,8 +248,8 @@ int main(int argc, const char * argv[]) {
                 }
                 
                 // Get output feature
-                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
-                //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_0"];
+                //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
+                MLFeatureValue *outputFeature = [output featureValueForName:@"sub_63"];
                 if (!outputFeature) {
                     NSLog(@"Could not find output feature");
                     continue;
