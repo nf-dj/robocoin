@@ -91,6 +91,8 @@ def generate_ternary_matrix_from_seed(input_size=256, output_size=256, seed=b'\x
         # Place the shuffled signs at the chosen indices.
         A[i, chosen_indices] = sign_vector
 
+    print("A",A)
+
     return A
 
 
@@ -154,12 +156,34 @@ def analyze_binary_randomness(vectors):
         'chi2_statistic': chi2_stat
     }
 
-    # Runs test: count the number of runs in each vector.
-    runs_test_results = []
-    for vector in vectors:
-        runs = np.diff(vector).astype(bool).sum() + 1
-        runs_test_results.append(runs)
-    results['avg_runs'] = np.mean(runs_test_results)
+    # Updated runs test using Z-statistic (like in hash_analyzer.py)
+    flattened_bits = vectors.flatten()
+    n1, n2 = np.sum(flattened_bits), len(flattened_bits) - np.sum(flattened_bits)  # counts of 1s and 0s
+    runs = 1  # start with 1 for the first run
+    for i in range(len(flattened_bits)-1):
+        if flattened_bits[i] != flattened_bits[i+1]:
+            runs += 1
+            
+    # Calculate Z-statistic
+    expected_runs = ((2 * n1 * n2) / (n1 + n2)) + 1
+    std_runs = np.sqrt((2 * n1 * n2 * (2 * n1 * n2 - n1 - n2)) / 
+                      ((n1 + n2)**2 * (n1 + n2 - 1)))
+    runs_z = (runs - expected_runs) / std_runs
+    runs_p = 2 * (1 - stats.norm.cdf(abs(runs_z)))
+    
+    results['runs_z'] = runs_z
+    results['runs_p'] = runs_p
+    results['runs_count'] = runs
+    results['expected_runs'] = expected_runs
+    
+    test_results['runs_test'] = {
+        'pass': runs_p >= 0.05,  # Using standard 0.05 significance level
+        'criterion': 'p-value >= 0.05 for runs test',
+        'value': runs_p,
+        'z_statistic': runs_z,
+        'actual_runs': runs,
+        'expected_runs': expected_runs
+    }
 
     # Autocorrelation: compute the first 4 lags.
     autocorr_results = []
@@ -226,13 +250,6 @@ def analyze_binary_randomness(vectors):
         'chi2_statistic': results['chi2_details']['chi2_statistic']
     }
 
-    expected_runs = vectors.shape[1] / 2 + 1
-    test_results['runs_test'] = {
-        'pass': 0.9 * expected_runs <= results['avg_runs'] <= 1.1 * expected_runs,
-        'criterion': f'within ±10% of expected runs ({expected_runs:.1f})',
-        'value': results['avg_runs']
-    }
-
     max_autocorr = np.max(np.abs(results['mean_autocorr']))
     test_results['autocorr_test'] = {
         'pass': max_autocorr < 0.1,
@@ -289,7 +306,6 @@ def plot_analysis(vectors, results, vector_type='binary'):
     plt.tight_layout()
     plt.show()
 
-
 def print_test_results(results, vector_type):
     """Print formatted test results."""
     print(f"\n{vector_type.upper()} Vector Analysis Results:")
@@ -308,13 +324,10 @@ def print_test_results(results, vector_type):
             print(f"Observed counts: {test_data['observed_counts']}")
             print(f"Expected counts: {test_data['expected_counts']}")
             print(f"Chi-square statistic: {test_data['chi2_statistic']:.4f}")
-    print("\nDetailed Statistics:")
-    print("-" * 50)
-    print(f"Standard deviation: {results['std_dev']:.4f}")
-    print("\nMean autocorrelation for first 4 lags:")
-    for i, corr in enumerate(results['mean_autocorr'], 1):
-        print(f"Lag {i}: {corr:.4f}")
-
+        elif test_name == 'runs_test':
+            print(f"Z-statistic: {test_data['z_statistic']:.4f}")
+            print(f"Actual runs: {test_data['actual_runs']}")
+            print(f"Expected runs: {test_data['expected_runs']:.2f}")
 
 def main():
     # Use a 32-byte seed (here using 32 bytes of 0x01 as an example)

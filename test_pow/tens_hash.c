@@ -9,8 +9,8 @@
 
 #define IN_SIZE 32
 #define HIDDEN 256
-//#define ROUNDS 64
-#define ROUNDS 1
+#define ROUNDS 64
+//#define ROUNDS 1
 
 typedef enum {
     IMPL_INT8 = 0,
@@ -32,9 +32,9 @@ typedef struct {
 
 static void matrix_multiply_relu_int8(int8_t **weights, int8_t *biases, uint8_t *in, uint8_t *out, int8_t *noise, int rows, int cols) {
     for (int i = 0; i < rows; i++) {
-        int8_t sum = 0;
+        int32_t sum = 0;
         for (int j = 0; j < cols; j++) {
-            sum += weights[i][j] * in[j];
+            sum += weights[j][i] * in[j];
         }
         sum *= 2;
         sum += biases[i];
@@ -49,7 +49,7 @@ static void matrix_multiply_relu_fp32(int8_t **weights, int8_t *biases, uint8_t 
     for (int i = 0; i < rows; i++) {
         float sum = 0.0;
         for (int j = 0; j < cols; j++) {
-            sum += (float)weights[i][j] * (float)in[j];
+            sum += (float)weights[j][i] * (float)in[j];
         }
 		sum *= 2.0;
         sum += (float)biases[i];
@@ -62,7 +62,7 @@ static void matrix_multiply_relu_fp16(int8_t **weights, int8_t *biases, uint8_t 
     for (int i = 0; i < rows; i++) {
         _Float16 sum = 0.0;
         for (int j = 0; j < cols; j++) {
-            sum += (_Float16)weights[i][j] * (_Float16)in[j];
+            sum += (_Float16)weights[j][i] * (_Float16)in[j];
         }
 		sum *= 2.0;
         sum += (_Float16)biases[i];
@@ -150,6 +150,50 @@ static void verify_matrix(int8_t **matrix, int8_t *biases, int round) {
     fprintf(stderr, "Round %d matrix verification passed\n", round);
 }
 
+void print_weights_and_bias(int8_t **matrix, int8_t *bias) {
+    fprintf(stderr, "weights: [[");
+    // Print first three rows fully
+    for (int i = 0; i < 3; i++) {
+        if (i > 0) fprintf(stderr, "\n [");
+        for (int j = 0; j < HIDDEN; j++) {
+            if (j < 3 || j >= HIDDEN-3) {
+                fprintf(stderr, "%2d", matrix[i][j]);
+                if (j < HIDDEN-1) fprintf(stderr, " ");
+            }
+            else if (j == 3) {
+                fprintf(stderr, "...");
+            }
+        }
+        fprintf(stderr, "]");
+    }
+    
+    // Print ellipsis for middle rows
+    fprintf(stderr, "\n ...");
+    
+    // Print last three rows
+    for (int i = HIDDEN-3; i < HIDDEN; i++) {
+        fprintf(stderr, "\n [");
+        for (int j = 0; j < HIDDEN; j++) {
+            if (j < 3 || j >= HIDDEN-3) {
+                fprintf(stderr, "%2d", matrix[i][j]);
+                if (j < HIDDEN-1) fprintf(stderr, " ");
+            }
+            else if (j == 3) {
+                fprintf(stderr, "...");
+            }
+        }
+        fprintf(stderr, "]");
+    }
+    fprintf(stderr, "]\n");
+    
+    fprintf(stderr, "bias: [");
+    for (int i = 0; i < HIDDEN; i++) {
+        fprintf(stderr, "%3d", bias[i]);
+        if (i < HIDDEN-1) fprintf(stderr, " ");
+    }
+    fprintf(stderr, "]\n");
+}
+
 static void generate_matrices(int8_t **matrices[ROUNDS], int8_t *biases[ROUNDS], uint8_t seed[32]) {
     const int pos_count = 32;  // Number of +1s per row
     const int neg_count = 32;  // Number of -1s per row
@@ -206,6 +250,16 @@ static void generate_matrices(int8_t **matrices[ROUNDS], int8_t *biases[ROUNDS],
         // Verify the matrix and biases for this round
         verify_matrix(matrices[r], biases[r], r);
     }
+
+	fprintf(stderr, "First few weights from first matrix:\n");
+	for (int i = 0; i < 5; i++) {  // first 5 rows
+		for (int j = 0; j < 5; j++) {  // first 5 columns
+			fprintf(stderr, "%d ", matrices[0][i][j]);
+		}
+		fprintf(stderr, "\n");
+	}
+
+    print_weights_and_bias(matrices[0], biases[0]);
     
     free(rand_vals);
 }
@@ -286,37 +340,43 @@ void compute_binary_and_noise_vectors(const uint8_t *input, uint8_t *binary_out,
     for (int i = 0; i < HIDDEN; i++) {
         binary_out[i] = (uint8_t)((first_hash[i / 8] >> (7 - (i % 8))) & 1);
     }
-    fprintf(stderr,"binary_out: ");
-    for (int i = 0; i < HIDDEN; i++) {
-        fprintf(stderr,"%d ", binary_out[i]);
-    }
-    fprintf(stderr,"\n");
     
     // Second SHA256 for noise
     crypto_hash_sha256(second_hash, first_hash, IN_SIZE);
     
-    // Convert second hash to noise vector
+    // Convert second hash to noise vector - now using same method as binary vector
     for (int i = 0; i < HIDDEN; i++) {
-        noise_out[i] = (int8_t)((second_hash[i % 32] >> (i % 8)) & 1);
+        noise_out[i] = (int8_t)((second_hash[i / 8] >> (7 - (i % 8))) & 1);
     }
-    fprintf(stderr,"noise_out: ");
-    for (int i = 0; i < HIDDEN; i++) {
-        fprintf(stderr,"%d ", noise_out[i]);
+}
+
+void bits_to_bytes_msb(const uint8_t *bits, uint8_t *bytes, size_t bit_len) {
+    memset(bytes, 0, (bit_len + 7) / 8);
+    for (size_t i = 0; i < bit_len; i++) {
+        if (bits[i]) {
+            bytes[i / 8] |= 0x80 >> (i % 8);  // MSB first
+        }
     }
-    fprintf(stderr,"\n");
+}
+
+void print_bit_array(const char* label, const uint8_t* bits, size_t len) {
+    fprintf(stderr, "%s: [", label);
+    for (size_t i = 0; i < len; i++) {
+        fprintf(stderr, "%d", bits[i]);
+        if (i < len-1) fprintf(stderr, " ");
+    }
+    fprintf(stderr, "]\n");
 }
 
 void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices,
                           HashBuffers* buffers, uint8_t output[IN_SIZE]) {
 
 	compute_binary_and_noise_vectors(input, buffers->state, buffers->noise);
+    print_bit_array("input", buffers->state, HIDDEN);
+    print_bit_array("noise", buffers->noise, HIDDEN);
 
     uint32_t round;
     for (round = 0; round < ROUNDS; round++) {
-        fprintf(stderr,"round %d: ",round);
-        for (int i = 0; i < HIDDEN; i++)
-            fprintf(stderr,"%d", buffers->state[HIDDEN-1-i]);
-        fprintf(stderr,"\n");
         matrix_multiply_relu(matrices->matrices[round], matrices->biases[round], buffers->state,
                            buffers->next_state, buffers->noise,
                            HIDDEN, HIDDEN, matrices->impl_type);
@@ -325,18 +385,9 @@ void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices
         buffers->next_state = temp;
     }
 
-    fprintf(stderr,"round %d: ",round);
-    for (int i = 0; i < HIDDEN; i++)
-        fprintf(stderr,"%d", buffers->state[HIDDEN-1-i]);
-    fprintf(stderr,"\n");
+    print_bit_array("output", buffers->state, HIDDEN);
 
-    // Convert bits back to bytes for output
-    memset(output, 0, IN_SIZE);
-    for (int i = 0; i < IN_SIZE; i++) {
-        for (int j = 0; j < 8; j++) {
-            output[i] |= buffers->state[i*8 + j] << j;
-        }
-    }
+    bits_to_bytes_msb(buffers->state, output, HIDDEN);
 }
 
 void tens_hash(uint8_t input[IN_SIZE], uint8_t seed[32], uint8_t output[IN_SIZE], ImplType impl_type) {

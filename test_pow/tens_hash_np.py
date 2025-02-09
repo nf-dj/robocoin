@@ -50,11 +50,11 @@ def generate_ternary_matrix_from_seed(seed):
         if pos_count_actual != pos_count or neg_count_actual != neg_count:
             raise ValueError(f"Row {i} has {pos_count_actual} +1s and {neg_count_actual} -1s (expected 32 each)")
     
-    return A, -col_sums  # Return both matrix and biases
+    return A
 
-def apply_matrix_and_threshold(binary_vector, noise_vector, matrix, biases):
+def apply_matrix_and_threshold(binary_vector, noise_vector, matrix, bias):
     result = np.matmul(binary_vector, matrix)
-    result = 2 * result + biases + noise_vector
+    result = 2 * result + bias + noise_vector
     return np.where(result > 0, 1, 0)
 
 def main():
@@ -69,19 +69,27 @@ def main():
         print("Error: Both seed and input must be 32 bytes (64 hex chars)")
         sys.exit(1)
         
+    matrix = generate_ternary_matrix_from_seed(seed)
+    print("weights:", matrix, file=sys.stderr)
+    bias = -np.sum(matrix, axis=0) 
+    print("bias:", bias, file=sys.stderr)
+
     input_hash_bytes = hashlib.sha256(input_bytes).digest()
     noise_bytes = hashlib.sha256(input_hash_bytes).digest()
     
     binary_vector = bytes_to_binary_vector(input_hash_bytes)
+    print("input:", binary_vector, file=sys.stderr)
     noise_vector = bytes_to_binary_vector(noise_bytes)
-    matrix, biases = generate_ternary_matrix_from_seed(seed)
+    print("noise:", noise_vector, file=sys.stderr)
     
     output_vector = binary_vector
     for _ in range(1):
-        output_vector = apply_matrix_and_threshold(output_vector, noise_vector, matrix, biases)
+        output_vector = apply_matrix_and_threshold(output_vector, noise_vector, matrix, bias)
+
+    print("output:", output_vector, file=sys.stderr)
     output_bytes = binary_vector_to_bytes(output_vector)
-    
-    print(output_bytes.hex())
+
+    print(output_bytes[::-1].hex())
 
 if __name__ == "__main__":
     main()
