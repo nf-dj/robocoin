@@ -13,11 +13,8 @@ def random_invertible_ternary_matrix(n, fill_prob=0.4, max_tries=500):
     Returns an invertible matrix (i.e. full rank) or None after max_tries.
     """
     for _ in range(max_tries):
-        # Generate a random matrix of floats in [0,1)
         R = np.random.random((n, n))
-        # Create an array of random choices from {1, -1}
         choices = np.random.choice([1, -1], size=(n, n))
-        # Where R < fill_prob, choose the random sign; otherwise, 0.
         M = np.where(R < fill_prob, choices, 0)
         if np.linalg.matrix_rank(M) == n:
             return M
@@ -45,39 +42,38 @@ def multiply_with_bias(M, v, bias):
     return M.dot(v) + bias
 
 ###############################################################################
-# 4. Symmetric Threshold Function
+# 4. Simple Threshold Function (No Hysteresis)
 ###############################################################################
-def threshold_with_symmetry(x):
+def simple_threshold(values):
     """
-    Vectorized function: for each x, return 1 if x > 0, 0 if x < 0,
-    and if x == 0, randomly choose 0 or 1.
-    (In practice, with continuous noise, exactly 0 will be rare.)
+    Applies a simple thresholding to convert continuous values to binary bits.
+    For each element in the NumPy array 'values':
+      - If value > 0, output 1.
+      - If value < 0, output 0.
+      - If value == 0, randomly choose 0 or 1.
+    Returns a NumPy array of binary bits.
     """
-    # x is a NumPy array
-    out = np.where(x > 0, 1, 0)
-    # Find elements exactly equal to 0 (rare) and assign randomly.
-    zero_mask = (x == 0)
+    out = np.where(values > 0, 1, 0)
+    zero_mask = (values == 0)
     if np.any(zero_mask):
-        random_bits = np.random.randint(0, 2, size=np.sum(zero_mask))
-        out[zero_mask] = random_bits
+        out[zero_mask] = np.random.randint(0, 2, size=np.sum(zero_mask))
     return out
 
 ###############################################################################
-# 5. Noise Addition and Thresholding (Conversion to Binary)
+# 5. Noise Addition and Thresholding (Using Gaussian Noise)
 ###############################################################################
-def add_noise_and_threshold(values, noise_amp=1.0):
+def add_noise_and_threshold(values, noise_std=0.5):
     """
-    Given a NumPy array 'values', add independent noise drawn uniformly from
-    [-noise_amp, noise_amp] and then apply symmetric thresholding:
-      output bit = 1 if (value + noise) > 0, 0 if < 0, and random if exactly 0.
+    Given a NumPy array 'values', adds Gaussian noise with mean 0 and standard deviation noise_std,
+    then applies the simple thresholding function.
     Returns a NumPy array of binary bits.
     """
-    noise = np.random.uniform(-noise_amp, noise_amp, size=values.shape)
+    noise = np.random.normal(0, noise_std, size=values.shape)
     noisy_values = values + noise
-    return threshold_with_symmetry(noisy_values)
+    return simple_threshold(noisy_values)
 
 ###############################################################################
-# 6. Statistical Tests (using Python functions)
+# 6. Statistical Tests
 ###############################################################################
 def monobit_test(bits):
     n = len(bits)
@@ -147,16 +143,16 @@ def cusum_test(bits):
     for x in xs:
         cumulative += x
         S.append(cumulative)
-    M = max(abs(s) for s in S)
-    start = int(math.ceil(M / math.sqrt(N)))
+    M_val = max(abs(s) for s in S)
+    start = int(math.ceil(M_val / math.sqrt(N)))
     sum_term = 0.0
     for k in range(start, 101):
-        arg1 = ((4 * k + 1) * M) / math.sqrt(N)
-        arg2 = ((4 * k - 1) * M) / math.sqrt(N)
+        arg1 = ((4 * k + 1) * M_val) / math.sqrt(N)
+        arg2 = ((4 * k - 1) * M_val) / math.sqrt(N)
         term = math.erfc(arg1 / math.sqrt(2)) - math.erfc(arg2 / math.sqrt(2))
         sum_term += term
     p_value = 1 - sum_term
-    return {"test": "Cumulative Sums", "M": M, "p_value": p_value}
+    return {"test": "Cumulative Sums", "M": M_val, "p_value": p_value}
 
 def autocorrelation_test(bits, lag=1):
     N = len(bits)
@@ -226,7 +222,7 @@ def gamma_inc_cf(a, x, max_iter=100, eps=1e-12):
     return math.exp(-x + a * math.log(x) - gln) * a1
 
 ###############################################################################
-# 8. Main: Generate Bitstream and Run Tests
+# 7. Main: Generate Bitstream and Run Tests
 ###############################################################################
 def main():
     n = 256
@@ -237,28 +233,23 @@ def main():
         return
     print("Matrix found.")
     
-    # Compute bias vector: b = -0.5 * sum(M, axis=1)
     bias = compute_bias(M)
     print("Bias vector computed.")
     
-    print("Now generating bitstream using numpy for matmult, bias, scaling, noise addition, and symmetric thresholding.")
-    scale_factor = 2.0  # Increase the dynamic range.
+    print("Now generating bitstream using numpy for matmult, bias, scaling, Gaussian noise, and simple thresholding (no hysteresis).")
+    scale_factor = 1.0  # No extra amplification.
     num_vectors = 20000  # Each vector produces 256 bits.
-    noise_amp = 1.0     # Adjust noise amplitude.
+    noise_std = 1.0     # Gaussian noise standard deviation.
     
     all_bits = []
     progress_interval = max(1, num_vectors // 20)
     
     for i in range(num_vectors):
-        # Generate a random 256-bit input vector (binary vector)
         v = np.random.randint(0, 2, size=n)
-        # Multiply M by v and add bias using numpy.
         int_result = M.dot(v) + bias
-        # Scale the result.
         scaled_result = int_result * scale_factor
-        # Add noise and apply symmetric thresholding.
-        final_bits = add_noise_and_threshold(scaled_result, noise_amp)
-        all_bits.extend(final_bits.tolist())
+        binary_output = add_noise_and_threshold(scaled_result, noise_std)
+        all_bits.extend(binary_output.tolist())
         
         if (i+1) % progress_interval == 0:
             pct = 100.0 * (i+1) / num_vectors
@@ -266,14 +257,13 @@ def main():
     
     print(f"\nDone generating {len(all_bits)} bits total.\n")
     
-    # Run statistical tests.
     results = []
     results.append(monobit_test(np.array(all_bits)))
     results.append(runs_test(np.array(all_bits)))
     results.append(block_frequency_test(np.array(all_bits), block_size=128))
     results.append(serial_test(np.array(all_bits)))
     results.append(cusum_test(all_bits))
-    results.append(autocorrelation_test(all_bits, lag=1))
+    results.append(autocorrelation_test(np.array(all_bits), lag=1))
     
     alpha = 0.01
     print("=== BASIC STATISTICAL TEST RESULTS ===")
