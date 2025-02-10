@@ -4,21 +4,30 @@ import math
 import sys
 
 ###############################################################################
-# 1. Random Invertible Ternary Matrix Generation using NumPy
+# 1. Hadamard Matrix Generation (Sylvester’s construction)
 ###############################################################################
-def random_invertible_ternary_matrix(n, fill_prob=0.4, max_tries=500):
+def hadamard_matrix(n):
     """
-    Generates an n x n matrix with entries in {-1, 0, +1} using NumPy.
-    Each entry is 0 with probability (1 - fill_prob) and ±1 with probability fill_prob/2.
-    Returns an invertible matrix (i.e. full rank) or None after max_tries.
+    Recursively constructs a Hadamard matrix of order n using Sylvester's construction.
+    n must be a power of 2.
     """
-    for _ in range(max_tries):
-        R = np.random.random((n, n))
-        choices = np.random.choice([1, -1], size=(n, n))
-        M = np.where(R < fill_prob, choices, 0)
-        if np.linalg.matrix_rank(M) == n:
-            return M
-    return None
+    if n == 1:
+        return np.array([[1]])
+    else:
+        H_small = hadamard_matrix(n // 2)
+        # Construct H using block matrix: [H H; H -H]
+        return np.block([[H_small, H_small],
+                         [H_small, -H_small]])
+
+def randomize_hadamard(H):
+    """
+    Multiplies each row of Hadamard matrix H by a random sign (+1 or -1)
+    to randomize the bias (e.g. the first row will no longer be all +1's).
+    Returns the randomized Hadamard matrix.
+    """
+    n = H.shape[0]
+    row_signs = np.random.choice([1, -1], size=(n, 1))
+    return H * row_signs
 
 ###############################################################################
 # 2. Bias Computation
@@ -60,7 +69,7 @@ def simple_threshold(values):
     return out
 
 ###############################################################################
-# 5. Noise Addition and Thresholding (Using Gaussian Noise)
+# 5. Noise Addition and Thresholding (Using Gaussian Noise, No Hysteresis)
 ###############################################################################
 def add_noise_and_threshold(values, noise_std=0.5):
     """
@@ -102,7 +111,7 @@ def runs_test(bits):
     p_value = math.erfc(abs(z) / math.sqrt(2))
     return {"test": "Runs", "num_runs": runs, "z_value": z, "p_value": p_value}
 
-def block_frequency_test(bits, block_size=512):
+def block_frequency_test(bits, block_size=2048):
     n = len(bits)
     num_blocks = n // block_size
     chi_sq = 0.0
@@ -222,26 +231,26 @@ def gamma_inc_cf(a, x, max_iter=100, eps=1e-12):
     return math.exp(-x + a * math.log(x) - gln) * a1
 
 ###############################################################################
-# 8. Main: Multiple Rounds Processing and Run Tests
+# 8. Main: Multiple Rounds Processing and Run Tests Using Hadamard Matrix
 ###############################################################################
 def main():
     n = 256
-    num_rounds = 16  # Perform 16 rounds of processing per input vector.
-    print("Generating a random invertible 256x256 ternary matrix using numpy...")
-    M = random_invertible_ternary_matrix(n=n, fill_prob=0.4, max_tries=500)
-    if M is None:
-        print("Failed to find an invertible matrix after 500 tries.")
-        return
-    print("Matrix found.")
+    num_rounds = 16  # Number of rounds to cascade.
+    print("Generating a Hadamard matrix of size 256 using Sylvester's construction...")
+    H = hadamard_matrix(n)
+    # Randomize rows by multiplying each row with a random sign (+1 or -1).
+    H = H * np.random.choice([1, -1], size=(n, 1))
+    # (H is always invertible; no need to check rank here.)
+    M = H  # Use the Hadamard matrix as our mixing matrix.
+    print("Hadamard matrix generated and randomized.")
     
     bias = compute_bias(M)
     print("Bias vector computed.")
     
-    print("Now generating bitstream using multiple rounds ({} rounds) of matmult, bias, scaling, Gaussian noise, and thresholding.".format(num_rounds))
-    
+    print("Now processing input vectors for {} rounds...".format(num_rounds))
     scale_factor = 1.0  # Adjust as needed.
     noise_std = 1.0     # Gaussian noise standard deviation.
-    num_vectors = 20000  # Each initial input produces one 256-bit output after rounds.
+    num_vectors = 20000  # Each initial vector produces one final 256-bit output.
     
     all_bits = []
     progress_interval = max(1, num_vectors // 20)
@@ -251,9 +260,11 @@ def main():
         v = np.random.randint(0, 2, size=n)
         # Perform multiple rounds.
         for r in range(num_rounds):
+            # Compute r = M*v + bias
             int_result = M.dot(v) + bias
+            # Scale the result.
             scaled_result = int_result * scale_factor
-            # Add noise and apply simple thresholding.
+            # Add Gaussian noise and threshold.
             v = add_noise_and_threshold(scaled_result, noise_std)
         # After all rounds, v is the final 256-bit output.
         all_bits.extend(v.tolist())
@@ -268,8 +279,8 @@ def main():
     results = []
     results.append(monobit_test(np.array(all_bits)))
     results.append(runs_test(np.array(all_bits)))
-    # Using block size 2048 to smooth out local fluctuations.
-    results.append(block_frequency_test(np.array(all_bits), block_size=8192))
+    # Use a larger block size (2048 bits) for block frequency.
+    results.append(block_frequency_test(np.array(all_bits), block_size=2048))
     results.append(serial_test(np.array(all_bits)))
     results.append(cusum_test(all_bits))
     results.append(autocorrelation_test(np.array(all_bits), lag=1))
