@@ -78,7 +78,8 @@ def add_noise_and_threshold(values, noise_std=0.5):
     Returns a NumPy array of binary bits.
     """
     noise = np.random.normal(0, noise_std, size=values.shape)
-    noisy_values = values + noise
+    #noisy_values = values + noise
+    noisy_values = values
     return simple_threshold(noisy_values)
 
 ###############################################################################
@@ -280,7 +281,7 @@ def main():
     results.append(monobit_test(np.array(all_bits)))
     results.append(runs_test(np.array(all_bits)))
     # Use a larger block size (2048 bits) for block frequency.
-    results.append(block_frequency_test(np.array(all_bits), block_size=2048))
+    results.append(block_frequency_test(np.array(all_bits), block_size=8192))
     results.append(serial_test(np.array(all_bits)))
     results.append(cusum_test(all_bits))
     results.append(autocorrelation_test(np.array(all_bits), lag=1))
