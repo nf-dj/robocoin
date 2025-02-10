@@ -9,7 +9,6 @@
 
 #define IN_SIZE 32
 #define HIDDEN 256
-//#define ROUNDS 64
 #define ROUNDS 1
 
 typedef enum {
@@ -20,7 +19,7 @@ typedef enum {
 
 typedef struct {
     int8_t **matrices[ROUNDS];
-    int8_t *biases[ROUNDS];
+    int8_t *biases[ROUNDS];  // (Not used in the new transform)
     ImplType impl_type;
 } PrecomputedMatrices;
 
@@ -30,60 +29,43 @@ typedef struct {
     int8_t  *noise;
 } HashBuffers;
 
-static void matrix_multiply_relu_int8(int8_t **weights, int8_t *biases, uint8_t *in, uint8_t *out, int8_t *noise, int rows, int cols) {
-    for (int i = 0; i < rows; i++) {
-        int32_t sum = 0;
-        for (int j = 0; j < cols; j++) {
-            sum += weights[j][i] * in[j];
+/* ---------------------------------------------------------------------
+   Binary Hadamard transform (binary vector → binary vector)
+   This function implements the transform as follows:
+     1. Convert the input binary vector to a "signed" vector: 0 → -1, 1 → +1.
+     2. For each row i, compute the dot product:
+             dot = sum_{j=0}^{HIDDEN-1} H[i][j] * (in[j] ? 1 : -1)
+     3. Then set:
+             if (dot > 0)      out[i] = 1;
+             if (dot < 0)      out[i] = 0;
+             if (dot == 0)     out[i] = noise[i];   // use noise parameter
+   --------------------------------------------------------------------- */
+static void binary_hadamard_transform(int8_t **H, uint8_t *in, uint8_t *out, int n, int8_t *noise) {
+    for (int i = 0; i < n; i++) {
+        int32_t dot = 0;
+        for (int j = 0; j < n; j++) {
+            int val = in[j] ? 1 : -1;
+            dot += H[i][j] * val;
         }
-        sum *= 2;
-        sum += biases[i];
-        //sum = 0; // XXX
-        sum += noise[i]*8-4;
-        //fprintf(stderr,"%d ",sum);
-        out[i] = (sum > 0) ? 1 : 0;
-    }
-    //fprintf(stderr,"\n");
-}
-
-static void matrix_multiply_relu_fp32(int8_t **weights, int8_t *biases, uint8_t *in, uint8_t *out, int8_t *noise, int rows, int cols) {
-    for (int i = 0; i < rows; i++) {
-        float sum = 0.0;
-        for (int j = 0; j < cols; j++) {
-            sum += (float)weights[j][i] * (float)in[j];
-        }
-		sum *= 2.0;
-        sum += (float)biases[i];
-        sum += (float)noise[i];
-        out[i] = (sum > 0) ? 1.0 : 0.0;
-    }
-}
-
-static void matrix_multiply_relu_fp16(int8_t **weights, int8_t *biases, uint8_t *in, uint8_t *out, int8_t *noise, int rows, int cols) {
-    for (int i = 0; i < rows; i++) {
-        _Float16 sum = 0.0;
-        for (int j = 0; j < cols; j++) {
-            sum += (_Float16)weights[j][i] * (_Float16)in[j];
-        }
-		sum *= 2.0;
-        sum += (_Float16)biases[i];
-        sum += (_Float16)noise[i];
-        out[i] = (sum > 0) ? 1.0 : 0.0;
+        /*
+        if (dot > 0)
+            out[i] = 1;
+        else if (dot < 0)
+            out[i] = 0;
+        else
+            out[i] = noise[i];  // Use noise vector for tie resolution.
+        */
+        dot+=noise[i];
+        out[i] = dot > 0;
     }
 }
 
-static void matrix_multiply_relu(int8_t **weights, int8_t *biases, uint8_t *in, uint8_t *out, int8_t *noise, int rows, int cols, ImplType impl_type) {
-    switch(impl_type) {
-        case IMPL_FP32:
-            matrix_multiply_relu_fp32(weights, biases, in, out, noise, rows, cols);
-            break;
-        case IMPL_FP16:
-            matrix_multiply_relu_fp16(weights, biases, in, out, noise, rows, cols);
-            break;
-        default:
-            matrix_multiply_relu_int8(weights, biases, in, out, noise, rows, cols);
-    }
-}
+/* ---------------------------------------------------------------------
+   The following functions remain unchanged:
+   - fill_random_bytes
+   - generate_sylvester_hadamard (recursive Sylvester construction)
+   - generate_permuted_hadamard_matrix (using ChaCha20 from libsodium)
+   --------------------------------------------------------------------- */
 
 int fill_random_bytes(uint8_t *buffer, size_t len) {
     int fd = open("/dev/urandom", O_RDONLY);
@@ -91,7 +73,6 @@ int fill_random_bytes(uint8_t *buffer, size_t len) {
         perror("Failed to open /dev/urandom");
         return -1;
     }
-
     size_t total = 0;
     while (total < len) {
         ssize_t nread = read(fd, buffer + total, len - total);
@@ -106,9 +87,33 @@ int fill_random_bytes(uint8_t *buffer, size_t len) {
     return 0;
 }
 
-typedef struct { 
-    uint32_t val; 
-    int idx; 
+/* Recursive Sylvester construction: H(1) = [1], H(2n) = [ H(n)  H(n); H(n) -H(n) ] */
+static void generate_sylvester_hadamard(int8_t *H, int n) {
+    if (n == 1) {
+        H[0] = 1;
+        return;
+    }
+    int half = n / 2;
+    generate_sylvester_hadamard(H, half);
+    for (int i = 0; i < half; i++) {
+        for (int j = 0; j < half; j++) {
+            int base = i * half + j;
+            int idx_tl = i * n + j;
+            int idx_tr = i * n + (j + half);
+            int idx_bl = (i + half) * n + j;
+            int idx_br = (i + half) * n + (j + half);
+            H[idx_tl] = H[base];
+            H[idx_tr] = H[base];
+            H[idx_bl] = H[base];
+            H[idx_br] = -H[base];
+        }
+    }
+}
+
+/* Helper structure and comparator for generating permutations */
+typedef struct {
+    uint64_t val;
+    int idx;
 } sort_pair_t;
 
 static int compare_pairs(const void *a, const void *b) {
@@ -119,23 +124,114 @@ static int compare_pairs(const void *a, const void *b) {
     return 0;
 }
 
-static void verify_matrix(int8_t **matrix, int8_t *biases, int round) {
-    // Verify row counts
-    for (int i = 0; i < HIDDEN; i++) {
-        int pos_count = 0;
-        int neg_count = 0;
-        for (int j = 0; j < HIDDEN; j++) {
-            if (matrix[i][j] == 1) pos_count++;
-            if (matrix[i][j] == -1) neg_count++;
-        }
-        /*if (pos_count != 32 || neg_count != 32) {
-            fprintf(stderr, "Error in round %d, row %d: found %d +1s and %d -1s (expected 32 each)\n",
-                    round, i, pos_count, neg_count);
-            exit(1);
-        }*/
+/* Generate a permuted Hadamard matrix using ChaCha20.
+   The Sylvester Hadamard matrix of size n x n is generated and then
+   its rows and columns are permuted according to random values generated
+   by ChaCha20 (with a fixed 8-byte nonce and a 32-byte seed).
+*/
+static int8_t *generate_permuted_hadamard_matrix(uint8_t seed[32], int n) {
+    int size = n * n;
+    int8_t *H = malloc(size * sizeof(int8_t));
+    if (!H) {
+        fprintf(stderr, "Failed to allocate Hadamard matrix\n");
+        exit(1);
+    }
+    generate_sylvester_hadamard(H, n);
+
+    uint8_t nonce[8] = {0};  // Fixed nonce: 8 bytes of 0
+    sort_pair_t *row_pairs = malloc(n * sizeof(sort_pair_t));
+    sort_pair_t *col_pairs = malloc(n * sizeof(sort_pair_t));
+    if (!row_pairs || !col_pairs) {
+        fprintf(stderr, "Failed to allocate permutation pairs\n");
+        exit(1);
+    }
+    uint64_t *rand_vals = malloc(n * sizeof(uint64_t));
+    if (!rand_vals) {
+        fprintf(stderr, "Failed to allocate random values\n");
+        exit(1);
     }
 
-    // Verify column sums match negative biases
+    // Generate row permutation
+    crypto_stream_chacha20((uint8_t*)rand_vals, n * sizeof(uint64_t), nonce, seed);
+    for (int i = 0; i < n; i++) {
+        row_pairs[i].val = rand_vals[i];
+        row_pairs[i].idx = i;
+    }
+    qsort(row_pairs, n, sizeof(sort_pair_t), compare_pairs);
+
+    // Generate column permutation (reuse rand_vals with a second call)
+    crypto_stream_chacha20((uint8_t*)rand_vals, n * sizeof(uint64_t), nonce, seed);
+    for (int i = 0; i < n; i++) {
+        col_pairs[i].val = rand_vals[i];
+        col_pairs[i].idx = i;
+    }
+    qsort(col_pairs, n, sizeof(sort_pair_t), compare_pairs);
+
+    int8_t *P = malloc(size * sizeof(int8_t));
+    if (!P) {
+        fprintf(stderr, "Failed to allocate permuted matrix\n");
+        exit(1);
+    }
+    for (int i = 0; i < n; i++) {
+        int orig_row = row_pairs[i].idx;
+        for (int j = 0; j < n; j++) {
+            int orig_col = col_pairs[j].idx;
+            P[i * n + j] = H[orig_row * n + orig_col];
+        }
+    }
+
+    free(H);
+    free(rand_vals);
+    free(row_pairs);
+    free(col_pairs);
+    return P;
+}
+
+/* Updated precomputation: generate one permuted Hadamard matrix and copy it into all rounds.
+   The biases are allocated (but not used in the new binary transform).
+*/
+PrecomputedMatrices* precompute_matrices(uint8_t seed[32], ImplType impl_type) {
+    PrecomputedMatrices* matrices = malloc(sizeof(PrecomputedMatrices));
+    if (!matrices) return NULL;
+    matrices->impl_type = impl_type;
+
+    int8_t *perm_hadamard = generate_permuted_hadamard_matrix(seed, HIDDEN);
+
+    for (int r = 0; r < ROUNDS; r++) {
+        matrices->matrices[r] = malloc(HIDDEN * sizeof(int8_t*));
+        if (!matrices->matrices[r]) {
+            exit(1);
+        }
+        matrices->matrices[r][0] = malloc(HIDDEN * HIDDEN * sizeof(int8_t));
+        if (!matrices->matrices[r][0]) {
+            exit(1);
+        }
+        memcpy(matrices->matrices[r][0], perm_hadamard, HIDDEN * HIDDEN * sizeof(int8_t));
+        for (int i = 1; i < HIDDEN; i++) {
+            matrices->matrices[r][i] = matrices->matrices[r][0] + (i * HIDDEN);
+        }
+        matrices->biases[r] = malloc(HIDDEN * sizeof(int8_t));
+        if (!matrices->biases[r]) {
+            exit(1);
+        }
+        memset(matrices->biases[r], 0, HIDDEN * sizeof(int8_t));
+    }
+    free(perm_hadamard);
+    return matrices;
+}
+
+/* ---------------------------------------------------------------------
+   The following functions remain unchanged:
+      - verify_matrix
+      - print_weights_and_bias
+      - init_hash_buffers
+      - free_matrices / free_hash_buffers
+      - compute_binary_and_noise_vectors
+      - bits_to_bytes_msb
+      - print_bit_array
+   --------------------------------------------------------------------- */
+
+void verify_matrix(int8_t **matrix, int8_t *biases, int round) {
     for (int j = 0; j < HIDDEN; j++) {
         int32_t col_sum = 0;
         for (int i = 0; i < HIDDEN; i++) {
@@ -147,46 +243,36 @@ static void verify_matrix(int8_t **matrix, int8_t *biases, int round) {
             exit(1);
         }
     }
-    
-    //fprintf(stderr, "Round %d matrix verification passed\n", round);
 }
 
 void print_weights_and_bias(int8_t **matrix, int8_t *bias) {
     fprintf(stderr, "weights: [[");
-    // Print first three rows fully
     for (int i = 0; i < 3; i++) {
         if (i > 0) fprintf(stderr, "\n [");
         for (int j = 0; j < HIDDEN; j++) {
             if (j < 3 || j >= HIDDEN-3) {
                 fprintf(stderr, "%2d", matrix[i][j]);
                 if (j < HIDDEN-1) fprintf(stderr, " ");
-            }
-            else if (j == 3) {
+            } else if (j == 3) {
                 fprintf(stderr, "...");
             }
         }
         fprintf(stderr, "]");
     }
-    
-    // Print ellipsis for middle rows
     fprintf(stderr, "\n ...");
-    
-    // Print last three rows
     for (int i = HIDDEN-3; i < HIDDEN; i++) {
         fprintf(stderr, "\n [");
         for (int j = 0; j < HIDDEN; j++) {
             if (j < 3 || j >= HIDDEN-3) {
                 fprintf(stderr, "%2d", matrix[i][j]);
                 if (j < HIDDEN-1) fprintf(stderr, " ");
-            }
-            else if (j == 3) {
+            } else if (j == 3) {
                 fprintf(stderr, "...");
             }
         }
         fprintf(stderr, "]");
     }
     fprintf(stderr, "]\n");
-    
     fprintf(stderr, "bias: [");
     for (int i = 0; i < HIDDEN; i++) {
         fprintf(stderr, "%3d", bias[i]);
@@ -195,114 +281,12 @@ void print_weights_and_bias(int8_t **matrix, int8_t *bias) {
     fprintf(stderr, "]\n");
 }
 
-static void generate_matrices(int8_t **matrices[ROUNDS], int8_t *biases[ROUNDS], uint8_t seed[32]) {
-    const int pos_count = 8;  // Number of +1s per row
-    const int neg_count = 8;  // Number of -1s per row
-    const int total_nonzero = pos_count + neg_count;
-    uint8_t nonce[8];  // 4 bytes for round, 4 bytes zeros
-    
-    // Generate random values per round
-    const size_t round_rand_vals = HIDDEN * HIDDEN;
-    uint32_t *rand_vals = malloc(round_rand_vals * sizeof(uint32_t));
-
-    // Pre-generate the sign array
-    int8_t base_signs[total_nonzero];
-    for (int j = 0; j < pos_count; j++) base_signs[j] = 1;
-    for (int j = pos_count; j < total_nonzero; j++) base_signs[j] = -1;
-
-    typedef struct { uint32_t val; int idx; } sort_pair_t;
-    sort_pair_t pairs[HIDDEN];
-
-    for (int r = 0; r < ROUNDS; r++) {
-        // Initialize column sums to zero
-        // Create nonce for this round
-    memset(nonce, 0, sizeof(nonce));
-    nonce[3] = r & 0xFF;  // Little-endian round number
-    nonce[2] = (r >> 8) & 0xFF;
-    nonce[1] = (r >> 16) & 0xFF;
-    nonce[0] = (r >> 24) & 0xFF;
-
-    // Generate random values for this round
-    crypto_stream_chacha20((uint8_t*)rand_vals, round_rand_vals * sizeof(uint32_t), nonce, seed);
-
-    int32_t col_sums[HIDDEN] = {0};
-        
-        for (int i = 0; i < HIDDEN; i++) {
-            // Clear the row
-            memset(matrices[r][i], 0, HIDDEN * sizeof(int8_t));
-            
-            // Point to the random values for this row
-            uint32_t *row_rand_vals = rand_vals + (i * HIDDEN);
-            
-            // Setup pairs for sorting
-            for (int j = 0; j < HIDDEN; j++) {
-                pairs[j].val = row_rand_vals[j];
-                pairs[j].idx = j;
-            }
-            
-            // Sort pairs by value
-            qsort(pairs, HIDDEN, sizeof(sort_pair_t), compare_pairs);
-            
-            // Place signs at the sorted positions and update column sums
-            for (int j = 0; j < total_nonzero; j++) {
-                int8_t sign = base_signs[j];
-                int col = pairs[j].idx;
-                matrices[r][i][col] = sign;
-                col_sums[col] += sign;
-            }
-        }
-        
-        // Set biases as negative column sums
-        for (int i = 0; i < HIDDEN; i++) {
-            biases[r][i] = -col_sums[i];
-        }
-
-        // Verify the matrix and biases for this round
-        verify_matrix(matrices[r], biases[r], r);
-    }
-
-    print_weights_and_bias(matrices[0], biases[0]);
-    //print_weights_and_bias(matrices[63], biases[63]);
-    
-    free(rand_vals);
-}
-
-PrecomputedMatrices* precompute_matrices(uint8_t seed[32], ImplType impl_type) {
-    PrecomputedMatrices* matrices = malloc(sizeof(PrecomputedMatrices));
-    if (!matrices) return NULL;
-
-    matrices->impl_type = impl_type;
-
-    for (int r = 0; r < ROUNDS; r++) {
-        matrices->matrices[r] = malloc(HIDDEN * sizeof(int8_t*));
-        if (!matrices->matrices[r]) {
-            exit(1);
-        }
-        matrices->matrices[r][0] = malloc(HIDDEN * HIDDEN * sizeof(int8_t));
-        if (!matrices->matrices[r][0]) {
-            exit(1);
-        }
-        for (int i = 1; i < HIDDEN; i++) {
-            matrices->matrices[r][i] = matrices->matrices[r][0] + (i * HIDDEN);
-        }
-        matrices->biases[r] = malloc(HIDDEN * sizeof(int8_t*));
-        if (!matrices->biases[r]) {
-            exit(1);
-        }
-    }
-
-    generate_matrices(matrices->matrices, matrices->biases, seed);
-    return matrices;
-}
-
 HashBuffers* init_hash_buffers(void) {
     HashBuffers* buffers = malloc(sizeof(HashBuffers));
     if (!buffers) return NULL;
-
     buffers->state = calloc(HIDDEN, sizeof(uint8_t));
     buffers->next_state = calloc(HIDDEN, sizeof(uint8_t));
     buffers->noise = malloc(HIDDEN * sizeof(int8_t));
-
     if (!buffers->state || !buffers->next_state || !buffers->noise) {
         if (buffers->state) free(buffers->state);
         if (buffers->next_state) free(buffers->next_state);
@@ -310,7 +294,6 @@ HashBuffers* init_hash_buffers(void) {
         free(buffers);
         return NULL;
     }
-
     return buffers;
 }
 
@@ -335,19 +318,11 @@ void free_hash_buffers(HashBuffers* buffers) {
 void compute_binary_and_noise_vectors(const uint8_t *input, uint8_t *binary_out, int8_t *noise_out) {
     unsigned char first_hash[crypto_hash_sha256_BYTES];
     unsigned char second_hash[crypto_hash_sha256_BYTES];
-    
-    // First SHA256 for binary vector
     crypto_hash_sha256(first_hash, input, IN_SIZE);
-    
-    // Convert first hash to binary vector
     for (int i = 0; i < HIDDEN; i++) {
         binary_out[i] = (uint8_t)((first_hash[i / 8] >> (7 - (i % 8))) & 1);
     }
-    
-    // Second SHA256 for noise
     crypto_hash_sha256(second_hash, first_hash, IN_SIZE);
-    
-    // Convert second hash to noise vector - now using same method as binary vector
     for (int i = 0; i < HIDDEN; i++) {
         noise_out[i] = (int8_t)((second_hash[i / 8] >> (7 - (i % 8))) & 1);
     }
@@ -357,7 +332,7 @@ void bits_to_bytes_msb(const uint8_t *bits, uint8_t *bytes, size_t bit_len) {
     memset(bytes, 0, (bit_len + 7) / 8);
     for (size_t i = 0; i < bit_len; i++) {
         if (bits[i]) {
-            bytes[i / 8] |= 0x80 >> (i % 8);  // MSB first
+            bytes[i / 8] |= 0x80 >> (i % 8);
         }
     }
 }
@@ -371,6 +346,11 @@ void print_bit_array(const char* label, const uint8_t* bits, size_t len) {
     fprintf(stderr, "]\n");
 }
 
+/* ---------------------------------------------------------------------
+   Updated tens_hash_precomputed:
+   The multi-round transform now calls binary_hadamard_transform with the noise vector.
+   The same precomputed (permuted Hadamard) matrix is used in every round.
+   --------------------------------------------------------------------- */
 void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices,
                           HashBuffers* buffers, uint8_t output[IN_SIZE]) {
 
@@ -379,22 +359,19 @@ void tens_hash_precomputed(uint8_t input[IN_SIZE], PrecomputedMatrices* matrices
         fprintf(stderr,"%02x", input[i]);
     fprintf(stderr,"\n");
 
-	compute_binary_and_noise_vectors(input, buffers->state, buffers->noise);
+    compute_binary_and_noise_vectors(input, buffers->state, buffers->noise);
     print_bit_array("input", buffers->state, HIDDEN);
     print_bit_array("noise", buffers->noise, HIDDEN);
 
-    uint32_t round;
-    for (round = 0; round < ROUNDS; round++) {
-        matrix_multiply_relu(matrices->matrices[round], matrices->biases[round], buffers->state,
-                           buffers->next_state, buffers->noise,
-                           HIDDEN, HIDDEN, matrices->impl_type);
+    for (uint32_t round = 0; round < ROUNDS; round++) {
+        binary_hadamard_transform(matrices->matrices[round], buffers->state,
+                                    buffers->next_state, HIDDEN, buffers->noise);
         uint8_t *temp = buffers->state;
         buffers->state = buffers->next_state;
         buffers->next_state = temp;
     }
 
     print_bit_array("output", buffers->state, HIDDEN);
-
     bits_to_bytes_msb(buffers->state, output, HIDDEN);
 }
 
@@ -448,7 +425,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    ImplType impl_type = IMPL_INT8;  // Default
+    ImplType impl_type = IMPL_INT8;
     if (argc == 4) {
         int type = atoi(argv[3]);
         if (type >= 0 && type <= 2) {
@@ -489,3 +466,4 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 #endif
+
