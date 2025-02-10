@@ -260,7 +260,7 @@ def main():
     results = []
     results.append(monobit_test(np.array(all_bits)))
     results.append(runs_test(np.array(all_bits)))
-    results.append(block_frequency_test(np.array(all_bits), block_size=128))
+    results.append(block_frequency_test(np.array(all_bits), block_size=2048))
     results.append(serial_test(np.array(all_bits)))
     results.append(cusum_test(all_bits))
     results.append(autocorrelation_test(np.array(all_bits), lag=1))
