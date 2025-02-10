@@ -38,8 +38,8 @@ static void matrix_multiply_relu_int8(int8_t **weights, int8_t *biases, uint8_t 
         }
         sum *= 2;
         sum += biases[i];
-        sum = 0; // XXX
-        sum += noise[i];
+        //sum = 0; // XXX
+        sum += noise[i]*8-4;
         //fprintf(stderr,"%d ",sum);
         out[i] = (sum > 0) ? 1 : 0;
     }
@@ -128,11 +128,11 @@ static void verify_matrix(int8_t **matrix, int8_t *biases, int round) {
             if (matrix[i][j] == 1) pos_count++;
             if (matrix[i][j] == -1) neg_count++;
         }
-        if (pos_count != 32 || neg_count != 32) {
+        /*if (pos_count != 32 || neg_count != 32) {
             fprintf(stderr, "Error in round %d, row %d: found %d +1s and %d -1s (expected 32 each)\n",
                     round, i, pos_count, neg_count);
             exit(1);
-        }
+        }*/
     }
 
     // Verify column sums match negative biases
@@ -196,8 +196,8 @@ void print_weights_and_bias(int8_t **matrix, int8_t *bias) {
 }
 
 static void generate_matrices(int8_t **matrices[ROUNDS], int8_t *biases[ROUNDS], uint8_t seed[32]) {
-    const int pos_count = 32;  // Number of +1s per row
-    const int neg_count = 32;  // Number of -1s per row
+    const int pos_count = 8;  // Number of +1s per row
+    const int neg_count = 8;  // Number of -1s per row
     const int total_nonzero = pos_count + neg_count;
     uint8_t nonce[8];  // 4 bytes for round, 4 bytes zeros
     

@@ -182,7 +182,7 @@ def main():
     
     # Run analysis with fixed seed
     print(f"Using fixed seed: {analyzer.fixed_seed}")
-    fig, stats_results = analyzer.plot_analysis(input_start, num_hashes=2000)
+    fig, stats_results = analyzer.plot_analysis(input_start, num_hashes=3000)
     
     # Print statistical test results
     print("\nStatistical Test Results:")
