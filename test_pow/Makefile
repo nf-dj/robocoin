@@ -64,6 +64,9 @@ sparse_hadamard_pow: sparse_hadamard_pow.c tens_hash.c
 greedy_pow: greedy_pow.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
+greedy_pow_seed: greedy_pow_seed.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
 clean:
 	rm -f tens_hash tens_pow tens_pow_metal_int8 tens_hash_coreml test_coreml hadamard_pow sparse_hadamard_pow *.air *.metallib
 
