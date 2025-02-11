@@ -7,11 +7,12 @@
 #include <math.h>
 #include <openssl/sha.h>
 
-#define N 256                 // Final weighing matrix size: 256 x 256
-#define HALF_N (N/2)          // 128
-#define BLOCK_SIZE 32         // SHA256 produces 32 bytes
+#define N 256                   // Final weighing matrix is 256 x 256
+#define NUM_BLOCKS 4            // We will use 4 diagonal blocks
+#define BLOCK_SIZE (N/NUM_BLOCKS) // Each block is 256/4 = 64 x 64
+#define SHA256_BLOCK_SIZE 32    // SHA256 produces 32 bytes
 
-// Global randomness statistics (unchanged)
+// Global statistics (unchanged from before)
 static uint64_t total_ones = 0;
 static uint64_t total_bits = 0;
 static uint64_t max_run_zeros = 0;
@@ -19,7 +20,7 @@ static uint64_t max_run_ones = 0;
 static uint64_t curr_run_zeros = 0;
 static uint64_t curr_run_ones = 0;
 
-// Transition counts for serial test (00, 01, 10, 11)
+// Transition counts for serial test (00,01,10,11)
 static uint64_t transitions[4] = {0};
 static uint8_t last_bit = 0;
 
@@ -39,7 +40,7 @@ void shuffle(int *array, int n) {
 }
 
 // --------------------------------------------------------------------------
-// Generate a Hadamard matrix of size n (n a power of two) using a Sylvester‐like method.
+// Generate a Hadamard matrix of size n (n a power of 2) using a Sylvester–like method.
 void generate_hadamard_matrix_n(int8_t **H, int n) {
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
@@ -56,52 +57,45 @@ void generate_hadamard_matrix_n(int8_t **H, int n) {
 }
 
 // --------------------------------------------------------------------------
-// Build a 256x256 weighing matrix using two 128x128 Hadamard matrices.
-// First, we create a block-diagonal matrix W where the top‐left block is H1
-// and the bottom–right block is H2 (all other entries zero). Then we randomly
-// permute the rows and columns (using the same pair of permutation matrices)
-// to “spread” the nonzero entries. (Note: since a permutation is orthogonal,
-// the final W satisfies W Wᵀ = 128·I.)
+// Build a 256x256 weighing matrix with 25% nonzero entries.
+// We construct a block-diagonal matrix with 4 diagonal blocks (each 64x64)
+// filled with Hadamard matrices, and then randomly permute rows and columns.
 void generate_weighing_matrix(int8_t **W) {
-    // Allocate two temporary 128x128 matrices.
-    int8_t **H1 = malloc(HALF_N * sizeof(int8_t *));
-    int8_t **H2 = malloc(HALF_N * sizeof(int8_t *));
-    for (int i = 0; i < HALF_N; i++) {
-        H1[i] = malloc(HALF_N * sizeof(int8_t));
-        H2[i] = malloc(HALF_N * sizeof(int8_t));
+    // Allocate temporary storage for NUM_BLOCKS Hadamard matrices of size BLOCK_SIZE x BLOCK_SIZE.
+    int8_t ***Hblocks = malloc(NUM_BLOCKS * sizeof(int8_t **));
+    for (int b = 0; b < NUM_BLOCKS; b++) {
+        Hblocks[b] = malloc(BLOCK_SIZE * sizeof(int8_t *));
+        for (int i = 0; i < BLOCK_SIZE; i++) {
+            Hblocks[b][i] = malloc(BLOCK_SIZE * sizeof(int8_t));
+        }
+        generate_hadamard_matrix_n(Hblocks[b], BLOCK_SIZE);
     }
-    // Generate the two Hadamard matrices.
-    generate_hadamard_matrix_n(H1, HALF_N);
-    generate_hadamard_matrix_n(H2, HALF_N);
-
-    // Build the 256x256 block-diagonal matrix:
-    // Rows 0..127: copy H1 into columns 0..127; columns 128..255 remain 0.
-    // Rows 128..255: copy H2 into columns 128..255; columns 0..127 remain 0.
+    
+    // Initialize the full N x N weighing matrix W to zeros.
     for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            W[i][j] = 0;
-        }
+        memset(W[i], 0, N * sizeof(int8_t));
     }
-    for (int i = 0; i < HALF_N; i++) {
-        for (int j = 0; j < HALF_N; j++) {
-            W[i][j] = H1[i][j];
-        }
-    }
-    for (int i = 0; i < HALF_N; i++) {
-        for (int j = 0; j < HALF_N; j++) {
-            W[i + HALF_N][j + HALF_N] = H2[i][j];
+    
+    // Place each 64x64 Hadamard block along the diagonal.
+    // Block b occupies rows [b*BLOCK_SIZE, (b+1)*BLOCK_SIZE-1] and similarly for columns.
+    for (int b = 0; b < NUM_BLOCKS; b++) {
+        for (int i = 0; i < BLOCK_SIZE; i++) {
+            for (int j = 0; j < BLOCK_SIZE; j++) {
+                W[b*BLOCK_SIZE + i][b*BLOCK_SIZE + j] = Hblocks[b][i][j];
+            }
         }
     }
     
-    // Free the temporary Hadamard matrices.
-    for (int i = 0; i < HALF_N; i++) {
-        free(H1[i]);
-        free(H2[i]);
+    // Free temporary Hadamard block matrices.
+    for (int b = 0; b < NUM_BLOCKS; b++) {
+        for (int i = 0; i < BLOCK_SIZE; i++) {
+            free(Hblocks[b][i]);
+        }
+        free(Hblocks[b]);
     }
-    free(H1);
-    free(H2);
-
-    // Now, randomly permute the rows and columns of W.
+    free(Hblocks);
+    
+    // Now randomly permute the rows and columns.
     int *row_perm = malloc(N * sizeof(int));
     int *col_perm = malloc(N * sizeof(int));
     for (int i = 0; i < N; i++) {
@@ -110,8 +104,8 @@ void generate_weighing_matrix(int8_t **W) {
     }
     shuffle(row_perm, N);
     shuffle(col_perm, N);
-
-    // Create a temporary matrix to hold the permuted version.
+    
+    // Create a temporary copy for the permuted matrix.
     int8_t **W_temp = malloc(N * sizeof(int8_t *));
     for (int i = 0; i < N; i++) {
         W_temp[i] = malloc(N * sizeof(int8_t));
@@ -125,6 +119,7 @@ void generate_weighing_matrix(int8_t **W) {
     for (int i = 0; i < N; i++) {
         memcpy(W[i], W_temp[i], N * sizeof(int8_t));
     }
+    
     // Clean up temporary arrays.
     for (int i = 0; i < N; i++) {
         free(W_temp[i]);
@@ -132,18 +127,18 @@ void generate_weighing_matrix(int8_t **W) {
     free(W_temp);
     free(row_perm);
     free(col_perm);
-
+    
     // Verify orthogonality.
-    // Each row should have a self dot–product of HALF_N (i.e. 128), and
-    // the dot product between any two distinct rows should be 0.
+    // Each row should have self dot product equal to BLOCK_SIZE (i.e., 64)
+    // and dot product between any two distinct rows should be 0.
     for (int i = 0; i < N; i++) {
         int dot_self = 0;
         for (int j = 0; j < N; j++) {
             dot_self += W[i][j] * W[i][j];
         }
-        if (dot_self != HALF_N) {
+        if (dot_self != BLOCK_SIZE) {
             fprintf(stderr, "Error: Row %d self dot product is %d, expected %d\n",
-                    i, dot_self, HALF_N);
+                    i, dot_self, BLOCK_SIZE);
             exit(1);
         }
         for (int k = i + 1; k < N; k++) {
@@ -159,7 +154,7 @@ void generate_weighing_matrix(int8_t **W) {
         }
     }
     printf("Weighing matrix generated: size %dx%d, weight per row = %d (%.2f%% nonzero).\n",
-           N, N, HALF_N, (float)(N * HALF_N * 100) / (N * N));
+           N, N, BLOCK_SIZE, (float)(N * BLOCK_SIZE * 100) / (N * N));
 }
 
 // --------------------------------------------------------------------------
@@ -167,7 +162,7 @@ void generate_weighing_matrix(int8_t **W) {
 void bytes_to_binary(uint8_t *bytes, uint8_t *binary, int nbytes) {
     for (int i = 0; i < nbytes; i++) {
         for (int j = 0; j < 8; j++) {
-            binary[i*8 + j] = (bytes[i] >> (7 - j)) & 1;
+            binary[i * 8 + j] = (bytes[i] >> (7 - j)) & 1;
         }
     }
 }
@@ -185,10 +180,10 @@ int count_leading_zeros(uint8_t *binary) {
 }
 
 // --------------------------------------------------------------------------
-// Apply the weighing transform: for each row i, compute the dot product
-// of row i of W with the input vector (interpreting bits as ±1).
+// Apply the weighing transform. For each row i of W, compute the dot product
+// with the input vector (interpreting bit 0 as -1 and bit 1 as +1).
 // If the dot is positive, output bit 1; if negative, output 0; if zero,
-// use the noise bit as a tiebreaker.
+// use the corresponding noise bit as a tiebreaker.
 static void binary_weighing_transform(int8_t **W, uint8_t *in, uint8_t *out, int n, uint8_t *noise) {
     for (int i = 0; i < n; i++) {
         int32_t dot = 0;
@@ -206,11 +201,9 @@ static void binary_weighing_transform(int8_t **W, uint8_t *in, uint8_t *out, int
 }
 
 // --------------------------------------------------------------------------
-// Main function. This is largely the same as your original code except
-// that we now generate a weighing matrix (using two 128x128 Hadamard matrices)
-// and use it in the transform.
+// Main function.
 int main() {
-    // Allocate the 256x256 weighing matrix W.
+    // Allocate the 256x256 weighing matrix.
     int8_t **W = malloc(N * sizeof(int8_t *));
     for (int i = 0; i < N; i++) {
         W[i] = malloc(N * sizeof(int8_t));
@@ -220,7 +213,7 @@ int main() {
     generate_weighing_matrix(W);
     
     // Buffers for SHA256, binary conversion, etc.
-    uint8_t hash[BLOCK_SIZE];
+    uint8_t hash[SHA256_BLOCK_SIZE];
     uint8_t input[N];
     uint8_t noise[N];
     uint8_t output[N];
@@ -239,14 +232,14 @@ int main() {
         SHA256_Init(&sha256);
         SHA256_Update(&sha256, &nonce, sizeof(nonce));
         SHA256_Final(hash, &sha256);
-        bytes_to_binary(hash, input, BLOCK_SIZE);
+        bytes_to_binary(hash, input, SHA256_BLOCK_SIZE);
         
         // Hash nonce+1 to get noise bits.
         nonce++;
         SHA256_Init(&sha256);
         SHA256_Update(&sha256, &nonce, sizeof(nonce));
         SHA256_Final(hash, &sha256);
-        bytes_to_binary(hash, noise, BLOCK_SIZE);
+        bytes_to_binary(hash, noise, SHA256_BLOCK_SIZE);
         nonce--;
         
         // Apply the weighing transform.
@@ -290,7 +283,7 @@ int main() {
         // Report progress every second.
         time_t current = time(NULL);
         if (current > last_report) {
-            printf("Progress: %lu hashes/s (%lu total), max zeros found: %d\n", 
+            printf("Progress: %lu hashes/s (%lu total), max zeros found: %d\n",
                    hashes, total_hashes + hashes, max_zeros);
             last_report = current;
             total_hashes += hashes;
@@ -306,11 +299,11 @@ int main() {
             double chi_square = fabs(ones_ratio - 0.5) * 200;
             int max_acceptable_run = 32;
             
-            printf("1. Bit distribution: %.4f%% ones (ideal: 50%%) %s\n", 
+            printf("1. Bit distribution: %.4f%% ones (ideal: 50%%) %s\n",
                    ones_percent,
                    (fabs(ones_percent - 50.0) < 0.1) ? "[PASS]" : "[FAIL]");
             
-            printf("2. Longest runs: %lu zeros, %lu ones %s\n", 
+            printf("2. Longest runs: %lu zeros, %lu ones %s\n",
                    max_run_zeros, max_run_ones,
                    (max_run_zeros <= max_acceptable_run && max_run_ones <= max_acceptable_run) ? "[PASS]" : "[FAIL]");
             
@@ -320,7 +313,7 @@ int main() {
                 double diff = transitions[i] - expected_trans;
                 trans_chi += (diff * diff) / expected_trans;
             }
-            printf("3. Serial test chi-square: %.4f %s\n", 
+            printf("3. Serial test chi-square: %.4f %s\n",
                    trans_chi,
                    (trans_chi < 7.815) ? "[PASS]" : "[FAIL]");
             
@@ -344,7 +337,7 @@ int main() {
             }
             
             bool entropy_pass = fabs(entropy - 3.0) < 0.1;
-            printf("4. Run length entropy: %.4f bits %s (ideal: 3.0)\n", 
+            printf("4. Run length entropy: %.4f bits %s (ideal: 3.0)\n",
                    entropy,
                    entropy_pass ? "[PASS]" : "[FAIL]");
             
@@ -354,7 +347,7 @@ int main() {
                 printf("--------|-------------|------------|---------|-------------\n");
                 for (int i = 0; i < 10; i++) {
                     double prob = (double)(zero_runs[i] + one_runs[i]) / total_runs;
-                    printf("%7d | %11lu | %10lu | %8lu | %11.4f%%\n", 
+                    printf("%7d | %11lu | %10lu | %8lu | %11.4f%%\n",
                            i + 1, zero_runs[i], one_runs[i], zero_runs[i] + one_runs[i],
                            prob * 100);
                 }
@@ -363,7 +356,7 @@ int main() {
                 printf("Total runs counted: %lu\n\n", total_runs);
             }
             
-            printf("5. Chi-square deviation from 50/50: %.4f%% %s\n", 
+            printf("5. Chi-square deviation from 50/50: %.4f%% %s\n",
                    chi_square,
                    (chi_square < 0.01) ? "[PASS]" : "[FAIL]");
             
