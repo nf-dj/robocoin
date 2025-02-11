@@ -135,10 +135,6 @@ static void ternary_transform(int8_t **M, uint8_t *in, uint8_t *out, int n, uint
             int val = in[j] ? 1 : -1;
             dot += M[i][j] * val;
         }
-        // Add a small bias based on the previous output bit (if any)
-        if (i > 0) {
-            dot += (out[i - 1] ? -1 : 1);
-        }
         if (dot > 0)
             out[i] = 1;
         else if (dot < 0)
