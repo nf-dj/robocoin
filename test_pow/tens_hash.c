@@ -11,11 +11,16 @@
 #define DOT_THRESHOLD 2
 #define ROUNDS 16
 
+// Global debug flag; set to true if user passes "--debug"
+static bool debug_mode = false;
+
 // Forward declarations
 static void print_row(int8_t *row, int row_num, int round, int attempts, int max_dot);
 
-// Print a row for debugging
+// Print a row for debugging (prints only if debug_mode is enabled)
 static void print_row(int8_t *row, int row_num, int round, int attempts, int max_dot) {
+    if (!debug_mode)
+        return;
     fprintf(stderr, "R%d Row %d (attempt %d, max_dot %d): ", round, row_num, attempts, max_dot);
     int nonzero = 0;
     for (int i = 0; i < N; i++) {
@@ -41,16 +46,17 @@ static bool hex_to_bytes(const char *hex, uint8_t *bytes, size_t len) {
 
 // Generate a random ternary row using ChaCha20
 static void generate_random_row(int8_t *row, const uint8_t *key, const uint8_t *nonce, uint64_t counter) {
-    uint8_t rand_buf[N];  // One byte per value
+    uint8_t rand_buf[N];
+    memset(rand_buf, 0, N);  // Zero out the buffer so we get just the keystream
     crypto_stream_chacha20_xor_ic(rand_buf, rand_buf, N, nonce, counter, key);
-    
+
     for (int j = 0; j < N; j++) {
-        uint8_t rand_val = rand_buf[j] & 0x1F;  // Just take lower 5 bits
-        if (rand_val == 0)         // ~1/32 chance of +1
+        uint8_t rand_val = rand_buf[j] & 0x1F;  // Take lower 5 bits
+        if (rand_val == 0)
             row[j] = 1;
-        else if (rand_val == 1)    // ~1/32 chance of -1
+        else if (rand_val == 1)
             row[j] = -1;
-        else                       // Otherwise, 0
+        else
             row[j] = 0;
     }
 }
@@ -144,10 +150,21 @@ static void ternary_transform(int8_t **M, uint8_t *in, uint8_t *out, uint8_t *no
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <seed> <nonce>\n", argv[0]);
+    // Allow usage: program <seed> <nonce> [--debug]
+    if (argc != 3 && argc != 4) {
+        fprintf(stderr, "Usage: %s <seed> <nonce> [--debug]\n", argv[0]);
         fprintf(stderr, "seed and nonce should be 32-byte hex strings\n");
         return 1;
+    }
+    
+    // Set debug mode if the extra argument is provided
+    if (argc == 4) {
+        if (strcmp(argv[3], "--debug") == 0) {
+            debug_mode = true;
+        } else {
+            fprintf(stderr, "Unknown option: %s\n", argv[3]);
+            return 1;
+        }
     }
     
     if (sodium_init() < 0) {
