@@ -3,6 +3,7 @@ import numpy as np
 from coremltools.converters.mil import Builder as mb
 import argparse
 from Crypto.Cipher import ChaCha20
+import sys
 
 SIZE = 256
 ROUNDS = 16
@@ -52,6 +53,7 @@ def generate_ternary_matrix_from_seed(seed, round_num, debug=False):
             # Request SIZE/2 bytes to get 256 nibbles (since each byte gives two 4-bit numbers)
             nbytes = SIZE // 2
             random_bytes = cipher.encrypt(b'\x00' * nbytes)
+            #print("random_bytes", random_bytes.hex())
             # Convert bytes into an array of unsigned 8-bit integers.
             arr = np.frombuffer(random_bytes, dtype=np.uint8)
             # Extract high and low nibbles from each byte to form an array of 256 4-bit numbers.
