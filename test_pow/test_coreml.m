@@ -8,9 +8,10 @@ static BOOL debugMode = NO;
 
 #define INPUT_SIZE 32
 #define VECTOR_SIZE 256
+#define HIDDEN_SIZE 1024
 #define NOISE_SIZE 256
-#define BATCH_SIZE 128
-#define ROUNDS 16
+#define BATCH_SIZE 2048
+#define ROUNDS 64
 
 // Noise generation functions from noise_gen.c
 void compute_binary_and_noise_vectors(const uint8_t *input, float *binary_out, float *noise_out) {
@@ -214,7 +215,7 @@ int main(int argc, const char * argv[]) {
             NSTimeInterval elapsed = -[startTime timeIntervalSinceNow];
             double hashrate = totalHashes / elapsed;
             // TOPS = (hashes_per_second * OPS_PER_HASH) / 1e12
-            double tops = (hashrate * (ROUNDS * 4096 * 4096 * 2 + 4096 * 256 * 4)) / 1e12;
+            double tops = (hashrate * (ROUNDS * HIDDEN_SIZE * HIDDEN_SIZE * 2 + HIDDEN_SIZE * VECTOR_SIZE * 4)) / 1e12;
             NSLog(@"Nonce: %llu | Hashrate: %.2f H/s | TOPS: %.2f | Best difficulty: %d", 
                   nonce, hashrate, tops, best_difficulty);
         });
@@ -242,7 +243,7 @@ int main(int argc, const char * argv[]) {
                 }
                 
                 // Get output feature
-                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_17"];
+                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_65"];
                 //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
                 if (!outputFeature) {
                     NSLog(@"Could not find output feature");
