@@ -84,7 +84,8 @@ bool generate_ternary_matrix(int8_t **M) {
             generate_random_row(M[i]);
             bool valid = true;
             for (int j = 0; j < i; j++) {
-                if (dot_product(M[i], M[j], N) > DOT_THRESHOLD) {
+                int32_t dot = dot_product(M[i], M[j], N);
+                if (dot > DOT_THRESHOLD || dot < -DOT_THRESHOLD) {
                     valid = false;
                     break;
                 }
