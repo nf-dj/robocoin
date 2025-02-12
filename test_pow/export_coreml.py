@@ -6,8 +6,8 @@ from Crypto.Cipher import ChaCha20
 import sys
 
 SIZE = 256
-ROUNDS = 64
-BATCH_SIZE = 16384
+ROUNDS = 16
+BATCH_SIZE = 128
 MAX_ATTEMPTS = 1000
 DOT_THRESHOLD = 5
 

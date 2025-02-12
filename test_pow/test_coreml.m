@@ -9,8 +9,8 @@ static BOOL debugMode = NO;
 #define INPUT_SIZE 32
 #define VECTOR_SIZE 256
 #define NOISE_SIZE 256
-#define BATCH_SIZE 16384
-#define ROUNDS 64
+#define BATCH_SIZE 128
+#define ROUNDS 16
 
 // Noise generation functions from noise_gen.c
 void compute_binary_and_noise_vectors(const uint8_t *input, float *binary_out, float *noise_out) {
@@ -241,8 +241,8 @@ int main(int argc, const char * argv[]) {
                 }
                 
                 // Get output feature
-                //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_15"];
-                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
+                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_15"];
+                //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
                 if (!outputFeature) {
                     NSLog(@"Could not find output feature");
                     continue;
