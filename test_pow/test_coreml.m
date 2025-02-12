@@ -133,7 +133,8 @@ int count_leading_zeros(MLMultiArray *output, NSInteger row) {
         
         free(input_batch);
         
-        self.featureNames = [NSSet setWithArray:@[@"input", @"noise"]];
+        //self.featureNames = [NSSet setWithArray:@[@"input", @"noise"]];
+        self.featureNames = [NSSet setWithArray:@[@"input"]];
     }
     return self;
 }
@@ -213,7 +214,7 @@ int main(int argc, const char * argv[]) {
             NSTimeInterval elapsed = -[startTime timeIntervalSinceNow];
             double hashrate = totalHashes / elapsed;
             // TOPS = (hashes_per_second * OPS_PER_HASH) / 1e12
-            double tops = (hashrate * (ROUNDS * 256 * 256 * 2 + 4 * 256)) / 1e12;
+            double tops = (hashrate * (ROUNDS * 4096 * 4096 * 2 + 4096 * 256 * 4)) / 1e12;
             NSLog(@"Nonce: %llu | Hashrate: %.2f H/s | TOPS: %.2f | Best difficulty: %d", 
                   nonce, hashrate, tops, best_difficulty);
         });
@@ -241,7 +242,7 @@ int main(int argc, const char * argv[]) {
                 }
                 
                 // Get output feature
-                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_15"];
+                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_17"];
                 //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
                 if (!outputFeature) {
                     NSLog(@"Could not find output feature");
