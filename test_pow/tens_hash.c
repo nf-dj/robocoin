@@ -95,8 +95,7 @@ static bool generate_ternary_matrix(int8_t **M, const uint8_t *seed, uint64_t ro
             for (int j = 0; j < i; j++) {
                 int32_t dp = dot_product(M[i], M[j]);
                 if (dp > max_dot) max_dot = dp;
-                if (dp < -max_dot) max_dot = -dp;
-                if (dp > DOT_THRESHOLD || dp < -DOT_THRESHOLD) {
+                if (dp > DOT_THRESHOLD) {
                     valid = false;
                     break;
                 }

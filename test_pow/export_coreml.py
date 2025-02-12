@@ -2,17 +2,18 @@ import coremltools as ct
 import numpy as np
 from coremltools.converters.mil import Builder as mb
 import argparse
-from Crypto.Cipher import ChaCha20
-from collections import deque
 
-
-SIZE=256
-ROUNDS=64
+# Constants (matching the C version)
+SIZE = 256
+ROUNDS = 16          # Using 16 rounds (default in the C version)
 BATCH_SIZE = 8192
-
+MAX_ATTEMPTS = 1000
+DOT_THRESHOLD = 5
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Export CoreML model with seed-based matrix generation")
+    parser = argparse.ArgumentParser(
+        description="Export CoreML model with seed-based matrix generation (C-style ternary transform)"
+    )
     parser.add_argument('seed', type=str, help='32-byte hex seed for matrix generation')
     return parser.parse_args()
 
@@ -21,90 +22,95 @@ def hex_to_bytes(hex_str):
 
 def generate_ternary_matrix_from_seed(seed, round_num):
     """
-    Generate a 256x256 ternary matrix A (dtype float32) with entries in {-1, 0, 1}
-    such that each row has exactly one +1 and one -1, and each column also gets exactly
-    one +1 and one -1.
-
-    The plus ones are assigned using a random permutation, and the minus ones are assigned
-    using a random derangement (i.e. a permutation with no fixed points relative to the plus
-    permutation). This ensures that in each row the -1 is placed in a column different from the +1.
+    Generate a 256x256 ternary matrix (dtype float32) whose rows are generated like in the C code.
     
-    The randomness is seeded using the provided seed (a bytes object) and the round number.
+    For each row:
+      - For each column, sample an integer in [0, 16).
+         * If the sampled value is 0, set the entry to +1.
+         * If the sampled value is 1, set the entry to -1.
+         * Otherwise, set the entry to 0.
+      - Accept the candidate row only if the absolute dot product with every previously
+        accepted row is ≤ DOT_THRESHOLD.
+    
+    Deterministic seeding is achieved by combining the provided 32-byte seed with the round number.
     """
-    # Combine the seed bytes and round number into an integer seed.
     seed_int = int.from_bytes(seed, 'big') ^ (round_num + 0xABCDEF)
     rng = np.random.default_rng(seed_int)
-    
-    # Generate a random permutation for plus ones.
-    plus_perm = rng.permutation(SIZE)
-    
-    # Generate a random permutation for minus ones that is a derangement relative to plus_perm.
-    # (i.e. for every row i, minus_perm[i] != plus_perm[i])
-    while True:
-        minus_perm = rng.permutation(SIZE)
-        if np.all(minus_perm != plus_perm):
-            break
-
-    print("plus_perm",plus_perm)
-    print("minus_perm",minus_perm)
-
-    # Create the matrix with zeros.
     A = np.zeros((SIZE, SIZE), dtype=np.int8)
     
-    # Place the +1's and -1's.
     for i in range(SIZE):
-        A[i, plus_perm[i]] = 1
-        A[i, minus_perm[i]] = -1
-
+        valid = False
+        for attempt in range(MAX_ATTEMPTS):
+            # Generate a candidate row.
+            vals = rng.integers(low=0, high=16, size=SIZE)
+            # Set entry: if value==0 then +1; if value==1 then -1; else 0.
+            row = np.where(vals == 0, 1, np.where(vals == 1, -1, 0)).astype(np.int8)
+            # Validate by checking dot product with all previously accepted rows.
+            is_valid = True
+            for j in range(i):
+                dot = np.abs(np.dot(row, A[j]))
+                if dot > DOT_THRESHOLD:
+                    is_valid = False
+                    break
+            if is_valid:
+                A[i] = row
+                valid = True
+                break
+        if not valid:
+            raise ValueError(f"Failed to generate valid row {i} after {MAX_ATTEMPTS} attempts for round {round_num}")
     return A.astype(np.float32)
 
 def main():
     args = parse_args()
     seed = hex_to_bytes(args.seed)
-    
     if len(seed) != 32:
         raise ValueError("Seed must be 32 bytes (64 hex chars)")
-
-    # Define input specifications
-    input_specs = [
-        mb.TensorSpec(shape=(BATCH_SIZE, 256)),  # input
-        mb.TensorSpec(shape=(BATCH_SIZE, 256)),  # noise
-    ]
-
-    # Generate matrices for all rounds
+    
+    # Generate one matrix per round using the C-style generation.
     matrices = [generate_ternary_matrix_from_seed(seed, round_num) for round_num in range(ROUNDS)]
-    print("matrix[0]", matrices[0])
-    print("matrix[-1]", matrices[-1])
-
-    biases = [-np.sum(matrix, axis=0) for matrix in matrices]
-    print("bias[0]", biases[0])
-    print("bias[-1]", biases[-1])
-
-    # Define the MIL program
+    print("Matrix for round 0 (first 5 rows):\n", matrices[0][:5])
+    print("Matrix for round -1 (first 5 rows):\n", matrices[-1][:5])
+    
+    # Define input specifications.
+    # "input" is the initial bit vector (values 0 or 1) and "noise" provides fallback bits.
+    input_specs = [
+        mb.TensorSpec(shape=(BATCH_SIZE, SIZE)),  # input bits
+        mb.TensorSpec(shape=(BATCH_SIZE, SIZE)),  # noise bits
+    ]
+    
     @mb.program(input_specs=input_specs)
-    def matmul_scaled_bias_clamped_relu_prog(input, noise):
+    def ternary_transform_prog(input, noise):
         x = input
-        # Apply rounds
         for round_num in range(ROUNDS):
-            x = mb.matmul(x=x, y=matrices[round_num])
-            #x = mb.mul(x=x, y=2.0)
-            x = mb.mul(x=x, y=0.0) # XXX
-            #x = mb.add(x=x, y=biases[round_num])
-            x = mb.add(x=x, y=noise)
-            x = mb.clip(x=x, alpha=0.0, beta=1.0)
+            # Map x from {0,1} to {-1,1}: (2 * x - 1)
+            temp = mb.mul(x=x, y=2.0)
+            x_mapped = mb.sub(x=temp, y=1.0)
+            
+            # Use the corresponding matrix
+            matrix_const = mb.const(val=matrices[round_num])
+            
+            # Compute the dot product: dot = x_mapped * matrix_const
+            dot = mb.matmul(x=x_mapped, y=matrix_const)
+            
+            # Add noise to dot.
+            temp_add = mb.add(x=dot, y=noise)
+            # Clip the result between 0 and 1.
+            round_out = mb.clip(x=temp_add, alpha=0.0, beta=1.0)
+            x = round_out
         return x
-
-    # Convert to Core ML model with FP16 precision
+    
+    # Convert the MIL program to a Core ML model with FP16 precision.
     mlmodel = ct.convert(
-        matmul_scaled_bias_clamped_relu_prog,
+        ternary_transform_prog,
         convert_to="mlprogram",
         compute_precision=ct.precision.FLOAT16,
         outputs=[ct.TensorType(name="output")]
     )
-
-    # Save as .mlpackage
+    
+    # Save the model.
     mlmodel.save("test_coreml.mlpackage")
-    print("Model saved as .mlpackage")
+    print("Model saved as 'test_coreml.mlpackage'.")
 
 if __name__ == "__main__":
     main()
+

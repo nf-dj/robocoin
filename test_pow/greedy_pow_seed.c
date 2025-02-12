@@ -66,7 +66,7 @@ bool generate_ternary_matrix(int8_t **M, const unsigned char *key, uint64_t roun
             for (int j = 0; j < i; j++) {
 
                 int32_t dot = dot_product(M[i], M[j], N);
-                if (dot > DOT_THRESHOLD || dot < -DOT_THRESHOLD) {
+                if (dot > DOT_THRESHOLD) {
                     valid = false;
                     break;
                 }
