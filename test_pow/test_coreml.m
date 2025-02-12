@@ -10,28 +10,20 @@ static BOOL debugMode = NO;
 #define VECTOR_SIZE 256
 #define NOISE_SIZE 256
 #define BATCH_SIZE 16384
-#define ROUNDS 16
+#define ROUNDS 64
 
 // Noise generation functions from noise_gen.c
 void compute_binary_and_noise_vectors(const uint8_t *input, float *binary_out, float *noise_out) {
-    unsigned char first_hash[crypto_hash_sha256_BYTES];
-    unsigned char second_hash[crypto_hash_sha256_BYTES];
+    unsigned char hash[crypto_hash_sha256_BYTES];
     
-    // First SHA256 for binary vector
-    crypto_hash_sha256(first_hash, input, INPUT_SIZE);
-    
-    // Convert first hash to binary vector
     for (int i = 0; i < VECTOR_SIZE; i++) {
-        binary_out[i] = (float)((first_hash[i / 8] >> (7 - (i % 8))) & 1);
+        binary_out[i] = (float)((input[i / 8] >> (7 - (i % 8))) & 1);
     }
     
-    // Second SHA256 for noise
-    crypto_hash_sha256(second_hash, first_hash, crypto_hash_sha256_BYTES);
+    crypto_hash_sha256(hash, input, crypto_hash_sha256_BYTES);
     
-    // Convert second hash to noise vector
     for (int i = 0; i < NOISE_SIZE; i++) {
-        noise_out[i] = (int8_t)((second_hash[i / 8] >> (7 - (i % 8))) & 1);
-        //noise_out[i] = noise_out[i]*3 - 1; // XXX
+        noise_out[i] = (int8_t)((hash[i / 8] >> (7 - (i % 8))) & 1);
     }
 }
 
@@ -249,8 +241,8 @@ int main(int argc, const char * argv[]) {
                 }
                 
                 // Get output feature
-                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_15"];
-                //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
+                //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_15"];
+                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
                 if (!outputFeature) {
                     NSLog(@"Could not find output feature");
                     continue;

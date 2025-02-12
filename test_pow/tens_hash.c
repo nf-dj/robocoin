@@ -175,17 +175,21 @@ static void binary_to_bytes(const uint8_t *binary, uint8_t *bytes) {
 // Ternary transform function.
 static void ternary_transform(int8_t **M, uint8_t *in, uint8_t *out, uint8_t *noise) {
     for (int i = 0; i < N; i++) {
-        int32_t dot = 0;
+        int32_t sum = 0;
         for (int j = 0; j < N; j++) {
             int val = in[j] ? 1 : -1;
-            dot += M[i][j] * val;
+            sum += M[i][j] * val;
         }
-        if (dot > 0)
+        /*if (sum>4) {
             out[i] = 1;
-        else if (dot < 0)
+        } else if (sum<=-4) {
             out[i] = 0;
-        else
+        } else {
             out[i] = noise[i];
+        }*/
+        //sum += noise[i] ? 4 : -4;
+        sum+=noise[i];
+        out[i] = sum > 0;
     }
 }
 
@@ -242,7 +246,8 @@ int main(int argc, char *argv[]) {
     SHA256_Init(&sha256);
     SHA256_Update(&sha256, nonce_input, 32);
     SHA256_Final(input_hash, &sha256);
-    bytes_to_binary(input_hash, input);
+    //bytes_to_binary(input_hash, input);
+    bytes_to_binary(nonce_input, input); // XXX
     
     // Derive noise bits from SHA256(input_hash).
     uint8_t noise_hash[32];
