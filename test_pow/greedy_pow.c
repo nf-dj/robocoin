@@ -11,7 +11,7 @@
 #define N 256                   // Matrix dimensions: 256 x 256
 #define BLOCK_SIZE 32           // SHA256 produces 32 bytes (256 bits)
 #define MAX_ATTEMPTS 1000
-#define DOT_THRESHOLD 2
+#define DOT_THRESHOLD 5
 
 // Global statistics variables
 static uint64_t total_ones = 0;
@@ -51,12 +51,13 @@ void calculate_row_biases(int8_t **M) {
 void generate_random_row(int8_t *row) {
     for (int j = 0; j < N; j++) {
         // Generate a random number from 0 to 31.
-        int r = rand() % 32;
-        if (r == 0)         // ~1/32 chance of +1
+        //int r = rand() % 32;
+        int r = rand() % 16;
+        if (r == 0)
             row[j] = 1;
-        else if (r == 1)    // ~1/32 chance of -1
+        else if (r == 1)
             row[j] = -1;
-        else                // Otherwise, 0
+        else
             row[j] = 0;
     }
 }

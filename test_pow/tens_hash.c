@@ -8,7 +8,7 @@
 
 // Constants from original implementation
 #define N 256
-#define DOT_THRESHOLD 2
+#define DOT_THRESHOLD 5
 #define ROUNDS 16
 
 // Global debug flag; set to true if user passes "--debug"
@@ -51,7 +51,8 @@ static void generate_random_row(int8_t *row, const uint8_t *key, const uint8_t *
     crypto_stream_chacha20_xor_ic(rand_buf, rand_buf, N, nonce, counter, key);
 
     for (int j = 0; j < N; j++) {
-        uint8_t rand_val = rand_buf[j] & 0x1F;  // Take lower 5 bits
+        //uint8_t rand_val = rand_buf[j] & 0x1F;  // Take lower 5 bits
+        uint8_t rand_val = rand_buf[j] & 0xF;  // Take lower 4 bits
         if (rand_val == 0)
             row[j] = 1;
         else if (rand_val == 1)
@@ -94,7 +95,8 @@ static bool generate_ternary_matrix(int8_t **M, const uint8_t *seed, uint64_t ro
             for (int j = 0; j < i; j++) {
                 int32_t dp = dot_product(M[i], M[j]);
                 if (dp > max_dot) max_dot = dp;
-                if (dp > DOT_THRESHOLD) {
+                if (dp < -max_dot) max_dot = -dp;
+                if (dp > DOT_THRESHOLD || dp < -DOT_THRESHOLD) {
                     valid = false;
                     break;
                 }
