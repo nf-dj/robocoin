@@ -9,6 +9,8 @@ static BOOL debugMode = NO;
 #define INPUT_SIZE 32
 #define VECTOR_SIZE 256
 #define NOISE_SIZE 256
+#define BATCH_SIZE 16384
+#define ROUNDS 16
 
 // Noise generation functions from noise_gen.c
 void compute_binary_and_noise_vectors(const uint8_t *input, float *binary_out, float *noise_out) {
@@ -34,7 +36,6 @@ void compute_binary_and_noise_vectors(const uint8_t *input, float *binary_out, f
 }
 
 void compute_binary_and_noise_batch(const uint8_t *inputs, float *binary_out, float *noise_out, int batch_size) {
-    #pragma omp parallel for
     for (int b = 0; b < batch_size; b++) {
         compute_binary_and_noise_vectors(
             inputs + (b * INPUT_SIZE),
@@ -206,7 +207,7 @@ int main(int argc, const char * argv[]) {
         NSLog(@"Mining with difficulty: %d%@", target_difficulty, debugMode ? @" (Debug mode enabled)" : @"");
         
         // Mining parameters
-        NSInteger batchSize = 8192;
+        NSInteger batchSize = BATCH_SIZE;
         __block uint64_t nonce = 0;
         __block uint64_t totalHashes = 0;
         __block NSDate *startTime = [NSDate date];
@@ -220,8 +221,7 @@ int main(int argc, const char * argv[]) {
             NSTimeInterval elapsed = -[startTime timeIntervalSinceNow];
             double hashrate = totalHashes / elapsed;
             // TOPS = (hashes_per_second * OPS_PER_HASH) / 1e12
-            // where OPS_PER_HASH = 64*256*256*2 + 4*256
-            double tops = (hashrate * (64.0 * 256 * 256 * 2 + 4 * 256)) / 1e12;
+            double tops = (hashrate * (ROUNDS * 256 * 256 * 2 + 4 * 256)) / 1e12;
             NSLog(@"Nonce: %llu | Hashrate: %.2f H/s | TOPS: %.2f | Best difficulty: %d", 
                   nonce, hashrate, tops, best_difficulty);
         });
@@ -249,9 +249,8 @@ int main(int argc, const char * argv[]) {
                 }
                 
                 // Get output feature
-                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
-                //MLFeatureValue *outputFeature = [output featureValueForName:@"sub_63"];
-                //MLFeatureValue *outputFeature = [output featureValueForName:@"cos_63"];
+                MLFeatureValue *outputFeature = [output featureValueForName:@"clip_15"];
+                //MLFeatureValue *outputFeature = [output featureValueForName:@"clip_63"];
                 if (!outputFeature) {
                     NSLog(@"Could not find output feature");
                     continue;
@@ -285,8 +284,7 @@ int main(int argc, const char * argv[]) {
                         best_difficulty = zeros;
                     }
                     
-                    //if (zeros >= target_difficulty) {
-                    if (0) {
+                    if (zeros >= target_difficulty) {
                         // Found a solution!
                         uint64_t solution_nonce = nonce + i;
                         NSLog(@"\nSolution found!");
