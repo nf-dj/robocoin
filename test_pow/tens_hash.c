@@ -95,31 +95,46 @@ int generate_sparse_matrix(int rows, int cols, const uint8_t *seed, uint64_t non
 
 // Updated: Compute output = A * (2*x - 1), where A is of shape (output_dim x input_dim).
 float global_max_accum = 0.0f;
+int global_max_nonzero = 0;
+
 void layer_forward(const Layer *layer, const float *input, float *output) {
     int in_dim = layer->input_dim;
     int out_dim = layer->output_dim;
-    
-    // Initialize output vector.
-    for (int j = 0; j < out_dim; j++) {
-        output[j] = 0.0f;
+
+    // Precompute mapped input: x_mapped[i] = 2*x[i] - 1.
+    float *x_mapped = malloc(in_dim * sizeof(float));
+    if (!x_mapped) {
+        fprintf(stderr, "Memory allocation error in layer_forward\n");
+        exit(1);
     }
-    
-    // For each input element, map x[i] to (2*x[i]-1) and accumulate contribution.
-    // Now, since we want to compute (A*x)[j] = sum_{i} A[j,i]*(2*x[i]-1),
-    // we iterate over i (from 0 to in_dim-1) and then over j (from 0 to out_dim-1),
-    // using A[j,i] = layer->matrix[j * in_dim + i].
     for (int i = 0; i < in_dim; i++) {
-        float x_mapped = 2.0f * input[i] - 1.0f;
-        for (int j = 0; j < out_dim; j++) {
-            output[j] += x_mapped * layer->matrix[j * in_dim + i];
-            float abs_accum = fabsf(output[j]);
-            if (abs_accum > global_max_accum) {
-                global_max_accum = abs_accum;
+        x_mapped[i] = 2.0f * input[i] - 1.0f;
+    }
+
+    // For each output neuron (each row of the matrix).
+    for (int j = 0; j < out_dim; j++) {
+        float sum = 0.0f;
+        // Pointer to the start of the j-th row in the matrix.
+        const float *row = &layer->matrix[j * in_dim];
+        int num_nonzero = 0;
+        for (int i = 0; i < in_dim; i++) {
+            sum += row[i] * x_mapped[i];
+            if (row[i] != 0.0f) {
+                num_nonzero++;
             }
         }
+        if (fabsf(sum) > global_max_accum) {
+            global_max_accum = fabsf(sum);
+        }
+        if (num_nonzero > global_max_nonzero) {
+            global_max_nonzero = num_nonzero;
+        }
+        output[j] = sum;
     }
-    
-    // Clip the result to [0, 1].
+
+    free(x_mapped);
+
+    // Clip the results to [0, 1].
     for (int j = 0; j < out_dim; j++) {
         if (output[j] < 0.0f)
             output[j] = 0.0f;
@@ -283,6 +298,7 @@ int main(int argc, char *argv[]) {
     free(layers);
     
     printf("Maximum absolute accumulator value: %f\n", global_max_accum);
+    printf("Maximum number of nonzeros in a row: %d\n", global_max_nonzero);
     
     return 0;
 }
