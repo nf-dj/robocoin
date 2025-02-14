@@ -8,18 +8,14 @@ extern "C" {
 #endif
 
 #define TENS_IN_SIZE 32     // Input/output size
-#define TENS_HIDDEN 256    // Hidden dimension size
-#define TENS_ROUNDS 64      // Number of middle rounds
 
 // Combined structure for hash computation context
 typedef struct {
-    // Matrix data - stored in contiguous blocks
-    int8_t *middle_mats;   // Single block of size TENS_ROUNDS * TENS_HIDDEN * TENS_HIDDEN
-    
-    // Buffer data
-    uint8_t *state;         // Size TENS_HIDDEN
-    uint8_t *next_state;    // Size TENS_HIDDEN
-    int8_t *noise;         // Holds all noise for all rounds
+    int8_t* expansion_mat;    // [TENS_HIDDEN x INPUT_BITS]
+    int8_t* hidden_mats;      // NUM_HIDDEN_LAYERS matrices, each [TENS_HIDDEN x TENS_HIDDEN]
+    int8_t* compression_mat;  // [INPUT_BITS x TENS_HIDDEN]
+    int8_t* state;            // working state (size: TENS_HIDDEN)
+    int8_t* next_state;       // working state (size: TENS_HIDDEN)
 } TensHashContext;
 
 // Core functions

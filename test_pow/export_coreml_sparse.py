@@ -43,11 +43,11 @@ def generate_dense_matrix(rows, cols, key, nonce_int):
     
     # Map each byte to a value in {-1, 0, 1} by taking modulo 3.
     mods = data % 4
-    # Mapping: 0 -> 0, 1 -> 1, 2 -> 0, 3 -> -1.
+    # Mapping: 0 -> 0, 1 -> 0, 2 -> 1, 3 -> -1.
     mapping = np.empty_like(mods, dtype=np.int8)
     mapping[mods == 0] = 0
-    mapping[mods == 1] = 1
-    mapping[mods == 2] = 0
+    mapping[mods == 1] = 0
+    mapping[mods == 2] = 1
     mapping[mods == 3] = -1
     
     # Reshape the flat array into the desired matrix shape and convert to float32.

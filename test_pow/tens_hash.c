@@ -77,9 +77,9 @@ int generate_dense_matrix(int rows, int cols, const uint8_t *seed, uint64_t nonc
     // Mapping: 0 -> 0, 1 -> 1, 2 -> 0, 3 -> -1.
     for (int i = 0; i < total; i++) {
         uint8_t mod = random_bytes[i] % 4;
-        if (mod == 0 || mod == 2) {
+        if (mod == 0 || mod == 1) {
             matrix[i] = 0;
-        } else if (mod == 1) {
+        } else if (mod == 2) {
             matrix[i] = 1;
         } else { // mod == 3
             matrix[i] = -1;
@@ -170,13 +170,7 @@ void layer_forward(const Layer *layer, const int8_t *input, int8_t *output) {
         if (num_nonzero > global_max_nonzero) {
             global_max_nonzero = num_nonzero;
         }
-        // Clip the result to [0, 1].
-        if (sum < 0)
-            output[j] = 0;
-        else if (sum > 1)
-            output[j] = 1;
-        else
-            output[j] = (int8_t)sum;
+        output[j] = sum > 0 ? 1 : 0;
     }
 
     free(x_mapped);

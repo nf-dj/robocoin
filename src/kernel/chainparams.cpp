@@ -142,7 +142,7 @@ public:
 
         //genesis = CreateGenesisBlock(1231006505, 2083236893, 0x1d00ffff, 1, 50 * COIN);
         //genesis = CreateGenesisBlock(1738337624, 0xda26, 0x1f00ffff, 1, 50 * COIN);
-        genesis = CreateGenesisBlock(1738337624, 0x4eddeb, 0x1e00ffff, 1, 50 * COIN);
+        genesis = CreateGenesisBlock(1738337624, 0x2fce2b, 0x1e00ffff, 1, 50 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
         printf("Genesis Block Hash: %s\n", consensus.hashGenesisBlock.ToString().c_str());
         printf("Merkle Root Hash: %s\n", genesis.hashMerkleRoot.ToString().c_str());
