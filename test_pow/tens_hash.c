@@ -3,9 +3,10 @@
 #include <stdint.h>
 #include <string.h>
 #include <sodium.h>
+#include <math.h>
 
-#define INPUT_SIZE 256
-#define HIDDEN_SIZE 1024
+#define INPUT_SIZE 256      // 256 bits (from 32 bytes) for input vector.
+#define HIDDEN_SIZE 1024    // Hidden layer size.
 #define NUM_HIDDEN_LAYERS 64
 // Total layers: expansion (1) + hidden layers + compression (1)
 #define NUM_LAYERS (1 + NUM_HIDDEN_LAYERS + 1)
@@ -13,7 +14,7 @@
 typedef struct {
     int input_dim;
     int output_dim;
-    // Matrix stored in row-major order, dimensions: (input_dim x output_dim)
+    // Matrix stored in row-major order, dimensions: (output_dim x input_dim)
     float *matrix;
     // Bias removed.
 } Layer;
@@ -46,42 +47,42 @@ void pack_bits(const int *bits, uint8_t *out_bytes) {
 /* --- Matrix Generation Functions --- */
 
 int generate_sparse_matrix(int rows, int cols, const uint8_t *seed, uint64_t nonce_counter, float *matrix) {
-    // Need 2 bytes per position, 127 positions per row
+    // Need 2 bytes per row, 127 positions per row
     const int bytes_per_row = 127 * 2;
     size_t total_bytes = rows * bytes_per_row;
     
-    // Allocate memory for random bytes
+    // Allocate memory for random bytes.
     uint8_t *random_bytes = malloc(total_bytes);
     if (!random_bytes) return -1;
     
-    // Create nonce for ChaCha20
+    // Create nonce for ChaCha20.
     uint8_t nonce[crypto_stream_chacha20_NONCEBYTES];
     for (int i = 0; i < crypto_stream_chacha20_NONCEBYTES; i++) {
         nonce[i] = (uint8_t)(nonce_counter >> (8 * (crypto_stream_chacha20_NONCEBYTES - 1 - i)));
     }
     
-    // Generate random bytes
+    // Generate random bytes.
     memset(random_bytes, 0, total_bytes);
     crypto_stream_chacha20_xor_ic(random_bytes, random_bytes, total_bytes, nonce, 0, seed);
     
-    // Initialize matrix to zeros
+    // Initialize matrix to zeros.
     memset(matrix, 0, rows * cols * sizeof(float));
     
-    // Process each row
+    // For each row, fill in exactly 127 nonzeros.
     for (int row = 0; row < rows; row++) {
         const uint8_t *row_bytes = random_bytes + row * bytes_per_row;
-        
-        // Process 127 positions per row
         for (int i = 0; i < 127; i++) {
             uint8_t byte1 = row_bytes[i * 2];
             uint8_t byte2 = row_bytes[i * 2 + 1];
             
-            // MSB of byte1 determines value
+            // MSB of byte1 determines value.
             float val = (byte1 & 0x80) ? 1.0f : -1.0f;
             
-            // Remaining 15 bits determine position
-            int pos = ((byte1 & 0x7F) << 8 | byte2) % cols;
+            // Remaining 15 bits determine position mod cols.
+            int pos = (((byte1 & 0x7F) << 8) | byte2) % cols;
             
+            // Note: Since we want the matrix in the "good" orientation,
+            // we generate a matrix of dimensions (rows x cols) which will be used directly.
             matrix[row * cols + pos] = val;
         }
     }
@@ -90,39 +91,35 @@ int generate_sparse_matrix(int rows, int cols, const uint8_t *seed, uint64_t non
     return 0;
 }
 
-// Transpose a matrix. 'in' has dimensions (rows x cols); 'out' will have dimensions (cols x rows).
-void transpose_matrix(const float *in, float *out, int rows, int cols) {
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++) {
-            out[j * rows + i] = in[i * cols + j];
-        }
-    }
-}
-
 /* --- Forward Propagation --- */
 
-// Perform forward propagation for one layer.
-// Instead of adding a bias, we initialize the output with zeros.
+// Updated: Compute output = A * (2*x - 1), where A is of shape (output_dim x input_dim).
+float global_max_accum = 0.0f;
 void layer_forward(const Layer *layer, const float *input, float *output) {
     int in_dim = layer->input_dim;
     int out_dim = layer->output_dim;
-
-    // Initialize output with 0.0 (bias removed).
+    
+    // Initialize output vector.
     for (int j = 0; j < out_dim; j++) {
         output[j] = 0.0f;
     }
     
-    // For each input element, compute its mapped value (2*x - 1)
-    // and accumulate its contribution to the output.
+    // For each input element, map x[i] to (2*x[i]-1) and accumulate contribution.
+    // Now, since we want to compute (A*x)[j] = sum_{i} A[j,i]*(2*x[i]-1),
+    // we iterate over i (from 0 to in_dim-1) and then over j (from 0 to out_dim-1),
+    // using A[j,i] = layer->matrix[j * in_dim + i].
     for (int i = 0; i < in_dim; i++) {
         float x_mapped = 2.0f * input[i] - 1.0f;
-        const float *mat_row = &layer->matrix[i * out_dim];
         for (int j = 0; j < out_dim; j++) {
-            output[j] += x_mapped * mat_row[j];
+            output[j] += x_mapped * layer->matrix[j * in_dim + i];
+            float abs_accum = fabsf(output[j]);
+            if (abs_accum > global_max_accum) {
+                global_max_accum = abs_accum;
+            }
         }
     }
     
-    // Clip the results to the [0, 1] range.
+    // Clip the result to [0, 1].
     for (int j = 0; j < out_dim; j++) {
         if (output[j] < 0.0f)
             output[j] = 0.0f;
@@ -145,14 +142,14 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     
-    // Parse seed (32 bytes).
+    // Parse seed.
     uint8_t seed[32];
     if (hex_to_bytes(argv[1], seed, 32) != 0) {
         fprintf(stderr, "Invalid seed hex. Expected 64 hex characters.\n");
         return 1;
     }
     
-    // Parse input (32 bytes).
+    // Parse input.
     uint8_t input_bytes[32];
     if (hex_to_bytes(argv[2], input_bytes, 32) != 0) {
         fprintf(stderr, "Invalid input hex. Expected 64 hex characters.\n");
@@ -160,7 +157,7 @@ int main(int argc, char *argv[]) {
     }
     
     // Convert the 32-byte input into a 256-element float vector.
-    // Each bit becomes one element (0.0 or 1.0).
+    // Each bit (0 or 1) becomes one float.
     float *x = malloc(INPUT_SIZE * sizeof(float));
     if (!x) {
         fprintf(stderr, "Memory allocation error\n");
@@ -170,13 +167,14 @@ int main(int argc, char *argv[]) {
         int byte_index = i / 8;
         int bit_index = 7 - (i % 8);
         int bit = (input_bytes[byte_index] >> bit_index) & 1;
-        x[i] = (float) bit;
+        x[i] = (float)bit;
     }
     
     // Set up the layers.
-    // Layer 0: Expansion layer (INPUT_SIZE -> HIDDEN_SIZE)
-    // Layers 1 to NUM_HIDDEN_LAYERS: Hidden layers (HIDDEN_SIZE -> HIDDEN_SIZE)
-    // Layer NUM_HIDDEN_LAYERS+1: Compression layer (HIDDEN_SIZE -> INPUT_SIZE)
+    // Layers:
+    //   - Expansion: from INPUT_SIZE (256) to HIDDEN_SIZE (1024)
+    //   - Hidden layers: NUM_HIDDEN_LAYERS layers of (HIDDEN_SIZE x HIDDEN_SIZE)
+    //   - Compression: from HIDDEN_SIZE (1024) to INPUT_SIZE (256)
     int num_layers = NUM_LAYERS;
     Layer *layers = malloc(num_layers * sizeof(Layer));
     if (!layers) {
@@ -189,32 +187,21 @@ int main(int argc, char *argv[]) {
     // --- Expansion layer ---
     layers[0].input_dim = INPUT_SIZE;
     layers[0].output_dim = HIDDEN_SIZE;
-    // Generate a matrix of shape (HIDDEN_SIZE x INPUT_SIZE) then transpose it.
-    float *temp_matrix = malloc(HIDDEN_SIZE * INPUT_SIZE * sizeof(float));
-    if (!temp_matrix) {
-        fprintf(stderr, "Memory allocation error\n");
-        free(x);
-        free(layers);
-        return 1;
-    }
-    if (generate_sparse_matrix(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter, temp_matrix) != 0) {
-        fprintf(stderr, "Error generating expansion matrix\n");
-        free(x);
-        free(layers);
-        free(temp_matrix);
-        return 1;
-    }
-    nonce_counter++;
-    layers[0].matrix = malloc(INPUT_SIZE * HIDDEN_SIZE * sizeof(float));
+    // Directly generate a matrix of shape (HIDDEN_SIZE x INPUT_SIZE)
+    layers[0].matrix = malloc(HIDDEN_SIZE * INPUT_SIZE * sizeof(float));
     if (!layers[0].matrix) {
         fprintf(stderr, "Memory allocation error\n");
         free(x);
         free(layers);
-        free(temp_matrix);
         return 1;
     }
-    transpose_matrix(temp_matrix, layers[0].matrix, HIDDEN_SIZE, INPUT_SIZE);
-    free(temp_matrix);
+    if (generate_sparse_matrix(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter, layers[0].matrix) != 0) {
+        fprintf(stderr, "Error generating expansion matrix\n");
+        free(x);
+        free(layers);
+        return 1;
+    }
+    nonce_counter++;
     
     // --- Hidden layers ---
     for (int l = 1; l <= NUM_HIDDEN_LAYERS; l++) {
@@ -236,25 +223,18 @@ int main(int argc, char *argv[]) {
     int comp_index = NUM_HIDDEN_LAYERS + 1;
     layers[comp_index].input_dim = HIDDEN_SIZE;
     layers[comp_index].output_dim = INPUT_SIZE;
-    temp_matrix = malloc(INPUT_SIZE * HIDDEN_SIZE * sizeof(float));
-    if (!temp_matrix) {
-        fprintf(stderr, "Memory allocation error\n");
-        return 1;
-    }
-    if (generate_sparse_matrix(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter, temp_matrix) != 0) {
-        fprintf(stderr, "Error generating compression matrix\n");
-        return 1;
-    }
-    nonce_counter++;
-    layers[comp_index].matrix = malloc(HIDDEN_SIZE * INPUT_SIZE * sizeof(float));
+    layers[comp_index].matrix = malloc(INPUT_SIZE * HIDDEN_SIZE * sizeof(float));
     if (!layers[comp_index].matrix) {
         fprintf(stderr, "Memory allocation error\n");
         return 1;
     }
-    transpose_matrix(temp_matrix, layers[comp_index].matrix, INPUT_SIZE, HIDDEN_SIZE);
-    free(temp_matrix);
+    if (generate_sparse_matrix(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter, layers[comp_index].matrix) != 0) {
+        fprintf(stderr, "Error generating compression matrix\n");
+        return 1;
+    }
+    nonce_counter++;
     
-    /* --- Forward Propagation Without Loop Allocations --- */
+    /* --- Forward Propagation --- */
     // Pre-allocate two buffers. The maximum dimension among all layers is HIDDEN_SIZE.
     int max_dim = HIDDEN_SIZE;
     float *buf1 = malloc(max_dim * sizeof(float));
@@ -270,26 +250,25 @@ int main(int argc, char *argv[]) {
     // Set up pointers for swapping.
     float *current = buf1;
     float *next = buf2;
-    
     for (int l = 0; l < num_layers; l++) {
         int out_dim = layers[l].output_dim;
         layer_forward(&layers[l], current, next);
-        // Swap pointers so that "next" becomes "current" for the next iteration.
+        // Swap pointers for the next layer.
         float *temp = current;
         current = next;
         next = temp;
     }
-    // After the loop, "current" holds the final output vector.
+    // After the loop, "current" holds the final output vector (of dimension INPUT_SIZE).
     
     // Threshold at 0.5 to obtain a binary vector.
-    int bits[INPUT_SIZE];  // Final output dimension is INPUT_SIZE (256).
+    int bits[INPUT_SIZE];
     for (int i = 0; i < INPUT_SIZE; i++) {
         bits[i] = (current[i] > 0.5f) ? 1 : 0;
     }
     uint8_t output_bytes[32];
     pack_bits(bits, output_bytes);
     
-    // Print the output as hex.
+    // Print the final output as hex.
     for (int i = 0; i < 32; i++) {
         printf("%02x", output_bytes[i]);
     }
@@ -302,6 +281,8 @@ int main(int argc, char *argv[]) {
         free(layers[l].matrix);
     }
     free(layers);
+    
+    printf("Maximum absolute accumulator value: %f\n", global_max_accum);
     
     return 0;
 }

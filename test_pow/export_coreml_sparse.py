@@ -13,8 +13,9 @@ BATCH_SIZE = 2048     # Batch size for the Core ML model.
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Export a CoreML model that uses ChaCha20-generated matrices without biases. "
-                    "The model accepts a 256-bit input, expands to a higher dimension, applies several hidden "
-                    "transformations, and compresses back to a 256-bit output."
+                    "The model accepts a 256-bit input (with shape (256, batch_size): each column is a sample), "
+                    "expands to a higher dimension, applies several hidden transformations, and compresses "
+                    "back to a 256-bit output."
     )
     parser.add_argument("seed", type=str, help="32-byte hex seed (64 hex characters)")
     return parser.parse_args()
@@ -29,33 +30,26 @@ def generate_sparse_matrix(rows, cols, seed, round_num):
     """
     Generate a sparse matrix with exactly 127 non-zeros per row.
     For each non-zero element:
-    - Uses 2 bytes: first byte (a) and second byte (b)
-    - MSB of first byte determines value (-1 or 1)
-    - Remaining 15 bits determine position mod cols
+      - Uses 2 bytes: first byte (a) and second byte (b)
+      - MSB of first byte determines value (-1 or 1)
+      - Remaining 15 bits determine position mod cols
     """
     nonce = round_num.to_bytes(8, byteorder='big')
     cipher = ChaCha20.new(key=seed, nonce=nonce)
     
-    # Need 2 bytes per position, 127 positions per row
+    # Need 2 bytes per row, 127 positions per row.
     bytes_per_row = 127 * 2
     random_bytes = cipher.encrypt(b'\x00' * (rows * bytes_per_row))
     
     matrix = np.zeros((rows, cols), dtype=np.float32)
     
     for row in range(rows):
-        # Get bytes for this row
         row_start = row * bytes_per_row
         for i in range(127):
-            # Get 2 bytes for this position
             byte1 = random_bytes[row_start + i*2]
             byte2 = random_bytes[row_start + i*2 + 1]
-            
-            # MSB of byte1 determines value
             val = 1 if (byte1 & 0x80) else -1
-            
-            # Remaining 15 bits determine position
-            pos = ((byte1 & 0x7F) << 8 | byte2) % cols
-            
+            pos = (((byte1 & 0x7F) << 8) | byte2) % cols
             matrix[row, pos] = val
             
     return matrix
@@ -65,51 +59,57 @@ def main():
     seed = hex_to_bytes(args.seed)
     
     # Each layer is stored as a tuple: (name, constant_matrix)
+    # Now we generate matrices in the orientation that works directly for A.x,
+    # assuming that each sample is a column vector.
     layers = []
-    nonce_counter = 0  # Use a different nonce for each matrix.
+    nonce_counter = 0
     
-    # Expansion layer: generate a matrix of shape (HIDDEN_SIZE, INPUT_SIZE)
-    # then transpose it to effectively have a constant of shape (INPUT_SIZE, HIDDEN_SIZE).
-    mat1 = generate_sparse_matrix(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter)
+    # Expansion layer: from 256 to 1024.
+    # Generate matrix with shape (HIDDEN_SIZE, INPUT_SIZE) = (1024, 256).
+    expansion_mat = generate_sparse_matrix(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter)
     nonce_counter += 1
-    expansion_mat = np.transpose(mat1)  # Now shape is (INPUT_SIZE, HIDDEN_SIZE)
     layers.append(('expansion', expansion_mat))
     
-    # Hidden layers: each is a (HIDDEN_SIZE, HIDDEN_SIZE) matrix.
+    # Hidden layers: each is (HIDDEN_SIZE, HIDDEN_SIZE).
     for i in range(NUM_HIDDEN_LAYERS):
         mat_hidden = generate_sparse_matrix(HIDDEN_SIZE, HIDDEN_SIZE, seed, nonce_counter)
         nonce_counter += 1
         layers.append(('hidden', mat_hidden))
     
-    # Compression layer: generate a matrix of shape (INPUT_SIZE, HIDDEN_SIZE)
-    # then transpose it to get a constant of shape (HIDDEN_SIZE, INPUT_SIZE).
-    mat_final = generate_sparse_matrix(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter)
+    # Compression layer: from 1024 back to 256.
+    # Generate matrix with shape (INPUT_SIZE, HIDDEN_SIZE) = (256, 1024).
+    compression_mat = generate_sparse_matrix(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter)
     nonce_counter += 1
-    compression_mat = np.transpose(mat_final)  # Now shape is (HIDDEN_SIZE, INPUT_SIZE)
     layers.append(('compression', compression_mat))
     
-    # Debug: print shapes and sums for each layer.
+    # Debug print for each layer.
     for idx, (name, mat) in enumerate(layers):
         print(f"Layer {idx} ({name}) - matrix shape: {mat.shape}, matrix sum: {np.sum(mat)}")
     
-    # Define the MIL program with a single input tensor of shape (BATCH_SIZE, INPUT_SIZE).
-    input_specs = [mb.TensorSpec(shape=(BATCH_SIZE, INPUT_SIZE))]
+    # Define the MIL program.
+    # Note: The input tensor is now defined as (INPUT_SIZE, BATCH_SIZE),
+    # so that each column is one 256-bit sample.
+    input_specs = [mb.TensorSpec(shape=(INPUT_SIZE, BATCH_SIZE))]
     
     @mb.program(input_specs=input_specs)
     def transform_prog(input):
-        x = input
+        x = input  # x has shape (INPUT_SIZE, BATCH_SIZE)
         # For each layer:
-        #   1. Map the input from {0, 1} to {-1, +1} via (2*x - 1)
-        #   2. Multiply by the constant matrix.
-        #   3. Clip the result to [0, 1].
+        #  1. Map input from {0, 1} to {-1, +1} via (2*x - 1).
+        #  2. Multiply by the constant matrix A (using A · x).
+        #  3. Clip the result to [0, 1].
         for idx, (name, mat) in enumerate(layers):
             temp = mb.mul(x=x, y=2.0)
             x_mapped = mb.sub(x=temp, y=1.0)
-            dot = mb.matmul(x=x_mapped, y=mb.const(val=mat))
+            # A.x multiplication:
+            #  - For expansion, A has shape (HIDDEN_SIZE, INPUT_SIZE) and x_mapped is (INPUT_SIZE, BATCH_SIZE),
+            #    yielding (HIDDEN_SIZE, BATCH_SIZE).
+            #  - For hidden layers, A is (HIDDEN_SIZE, HIDDEN_SIZE).
+            #  - For compression, A is (INPUT_SIZE, HIDDEN_SIZE).
+            dot = mb.matmul(x=mb.const(val=mat), y=x_mapped)
             x = mb.clip(x=dot, alpha=0.0, beta=1.0)
-        return x
+        return x  # Final output shape is (INPUT_SIZE, BATCH_SIZE).
     
-    # Convert the MIL program to a Core ML ML program (using FP16 precision).
     mlmodel = ct.convert(
         transform_prog,
         convert_to="mlprogram",
