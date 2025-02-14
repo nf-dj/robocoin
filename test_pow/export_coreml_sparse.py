@@ -9,6 +9,7 @@ INPUT_SIZE = 256      # Input vector size.
 HIDDEN_SIZE = 1024    # Hidden layer size.
 NUM_HIDDEN_LAYERS = 64
 BATCH_SIZE = 2048     # Batch size for the Core ML model.
+NUM_NONZERO = 128
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -26,9 +27,36 @@ def hex_to_bytes(hex_str):
         raise ValueError("Seed must be 32 bytes (64 hex characters)")
     return b
 
+def generate_dense_matrix(rows, cols, key, nonce_int):
+    """
+    Generate a constant matrix of shape (rows, cols) whose entries are chosen from {-1, 0, 1}
+    using a ChaCha20-based RNG. This simplified version uses one byte per trit.
+    """
+    # Create an 8-byte nonce from the given integer.
+    nonce = nonce_int.to_bytes(8, byteorder='big')
+    cipher = ChaCha20.new(key=key, nonce=nonce)
+    
+    needed = rows * cols
+    # Generate exactly the number of bytes needed.
+    random_bytes = cipher.encrypt(b'\x00' * needed)
+    data = np.frombuffer(random_bytes, dtype=np.uint8)
+    
+    # Map each byte to a value in {-1, 0, 1} by taking modulo 3.
+    mods = data % 4
+    # Mapping: 0 -> 0, 1 -> 1, 2 -> 0, 3 -> -1.
+    mapping = np.empty_like(mods, dtype=np.int8)
+    mapping[mods == 0] = 0
+    mapping[mods == 1] = 1
+    mapping[mods == 2] = 0
+    mapping[mods == 3] = -1
+    
+    # Reshape the flat array into the desired matrix shape and convert to float32.
+    mat = mapping.reshape((rows, cols)).astype(np.float32)
+    return mat
+
 def generate_sparse_matrix(rows, cols, seed, round_num):
     """
-    Generate a sparse matrix with exactly 127 non-zeros per row.
+    Generate a sparse matrix with at most NUM_NONZERO non-zeros per row.
     For each non-zero element:
       - Uses 2 bytes: first byte (a) and second byte (b)
       - MSB of first byte determines value (-1 or 1)
@@ -37,15 +65,15 @@ def generate_sparse_matrix(rows, cols, seed, round_num):
     nonce = round_num.to_bytes(8, byteorder='big')
     cipher = ChaCha20.new(key=seed, nonce=nonce)
     
-    # Need 2 bytes per row, 127 positions per row.
-    bytes_per_row = 127 * 2
+    # Need 2 bytes per row, NUM_NONZERO  positions per row.
+    bytes_per_row = NUM_NONZERO * 2
     random_bytes = cipher.encrypt(b'\x00' * (rows * bytes_per_row))
     
     matrix = np.zeros((rows, cols), dtype=np.float32)
     
     for row in range(rows):
         row_start = row * bytes_per_row
-        for i in range(127):
+        for i in range(NUM_NONZERO):
             byte1 = random_bytes[row_start + i*2]
             byte2 = random_bytes[row_start + i*2 + 1]
             val = 1 if (byte1 & 0x80) else -1
@@ -66,19 +94,19 @@ def main():
     
     # Expansion layer: from 256 to 1024.
     # Generate matrix with shape (HIDDEN_SIZE, INPUT_SIZE) = (1024, 256).
-    expansion_mat = generate_sparse_matrix(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter)
+    expansion_mat = generate_dense_matrix(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter)
     nonce_counter += 1
     layers.append(('expansion', expansion_mat))
     
     # Hidden layers: each is (HIDDEN_SIZE, HIDDEN_SIZE).
     for i in range(NUM_HIDDEN_LAYERS):
-        mat_hidden = generate_sparse_matrix(HIDDEN_SIZE, HIDDEN_SIZE, seed, nonce_counter)
+        mat_hidden = generate_dense_matrix(HIDDEN_SIZE, HIDDEN_SIZE, seed, nonce_counter)
         nonce_counter += 1
         layers.append(('hidden', mat_hidden))
     
     # Compression layer: from 1024 back to 256.
     # Generate matrix with shape (INPUT_SIZE, HIDDEN_SIZE) = (256, 1024).
-    compression_mat = generate_sparse_matrix(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter)
+    compression_mat = generate_dense_matrix(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter)
     nonce_counter += 1
     layers.append(('compression', compression_mat))
     

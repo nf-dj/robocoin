@@ -10,6 +10,7 @@
 #define NUM_HIDDEN_LAYERS 64
 // Total layers: expansion (1) + hidden layers + compression (1)
 #define NUM_LAYERS (1 + NUM_HIDDEN_LAYERS + 1)
+#define NUM_NONZERO 512
 
 typedef struct {
     int input_dim;
@@ -46,9 +47,48 @@ void pack_bits(const int *bits, uint8_t *out_bytes) {
 
 /* --- Matrix Generation Functions --- */
 
+// Generates a dense matrix of shape (rows x cols) with entries in {-1, 0, 1}
+// using a ChaCha20-based RNG. The key must be a 32-byte array.
+// The nonce is built from nonce_counter in big-endian order.
+// The matrix array must be pre-allocated by the caller with size rows * cols.
+int generate_dense_matrix(int rows, int cols, const uint8_t *seed, uint64_t nonce_counter, float *matrix) {
+    int total = rows * cols;
+    // Allocate a temporary buffer for the keystream.
+    uint8_t *random_bytes = malloc(total);
+    if (!random_bytes) {
+        return -1;
+    }
+
+    // Build an 8-byte nonce (crypto_stream_chacha20_NONCEBYTES is 8 for ChaCha20)
+    uint8_t nonce[crypto_stream_chacha20_NONCEBYTES];
+    for (int i = 0; i < crypto_stream_chacha20_NONCEBYTES; i++) {
+        nonce[i] = (uint8_t)(nonce_counter >> (8 * (crypto_stream_chacha20_NONCEBYTES - 1 - i)));
+    }
+
+    // Generate a pseudorandom keystream by encrypting a zero buffer.
+    memset(random_bytes, 0, total);
+    crypto_stream_chacha20_xor_ic(random_bytes, random_bytes, total, nonce, 0, seed);
+
+    // Map each byte to a value in {-1, 0, 1} using modulo 4.
+    // Mapping: 0 -> 0, 1 -> 1, 2 -> 0, 3 -> -1.
+    for (int i = 0; i < total; i++) {
+        uint8_t mod = random_bytes[i] % 4;
+        if (mod == 0 || mod == 2) {
+            matrix[i] = 0.0f;
+        } else if (mod == 1) {
+            matrix[i] = 1.0f;
+        } else { // mod == 3
+            matrix[i] = -1.0f;
+        }
+    }
+
+    free(random_bytes);
+    return 0;
+}
+
 int generate_sparse_matrix(int rows, int cols, const uint8_t *seed, uint64_t nonce_counter, float *matrix) {
-    // Need 2 bytes per row, 127 positions per row
-    const int bytes_per_row = 127 * 2;
+    // Need 2 bytes per row, NUM_NONZERO positions per row
+    const int bytes_per_row = NUM_NONZERO * 2;
     size_t total_bytes = rows * bytes_per_row;
     
     // Allocate memory for random bytes.
@@ -68,10 +108,10 @@ int generate_sparse_matrix(int rows, int cols, const uint8_t *seed, uint64_t non
     // Initialize matrix to zeros.
     memset(matrix, 0, rows * cols * sizeof(float));
     
-    // For each row, fill in exactly 127 nonzeros.
+    // For each row, fill in exactly NUM_NONZERO nonzeros.
     for (int row = 0; row < rows; row++) {
         const uint8_t *row_bytes = random_bytes + row * bytes_per_row;
-        for (int i = 0; i < 127; i++) {
+        for (int i = 0; i < NUM_NONZERO; i++) {
             uint8_t byte1 = row_bytes[i * 2];
             uint8_t byte2 = row_bytes[i * 2 + 1];
             
@@ -210,7 +250,7 @@ int main(int argc, char *argv[]) {
         free(layers);
         return 1;
     }
-    if (generate_sparse_matrix(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter, layers[0].matrix) != 0) {
+    if (generate_dense_matrix(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter, layers[0].matrix) != 0) {
         fprintf(stderr, "Error generating expansion matrix\n");
         free(x);
         free(layers);
@@ -227,7 +267,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Memory allocation error\n");
             return 1;
         }
-        if (generate_sparse_matrix(HIDDEN_SIZE, HIDDEN_SIZE, seed, nonce_counter, layers[l].matrix) != 0) {
+        if (generate_dense_matrix(HIDDEN_SIZE, HIDDEN_SIZE, seed, nonce_counter, layers[l].matrix) != 0) {
             fprintf(stderr, "Error generating hidden matrix at layer %d\n", l);
             return 1;
         }
@@ -243,7 +283,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Memory allocation error\n");
         return 1;
     }
-    if (generate_sparse_matrix(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter, layers[comp_index].matrix) != 0) {
+    if (generate_dense_matrix(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter, layers[comp_index].matrix) != 0) {
         fprintf(stderr, "Error generating compression matrix\n");
         return 1;
     }
