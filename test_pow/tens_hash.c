@@ -45,37 +45,48 @@ void pack_bits(const int *bits, uint8_t *out_bytes) {
 
 /* --- Matrix Generation Functions --- */
 
-// Using ChaCha20, generate a matrix of dimensions (rows x cols)
-// with entries chosen from {-1, 0, 1} (mapping: 0→-1, 1→0, 2→1).
-// The key is the 32-byte seed. The nonce is computed from nonce_counter
-// as an 8-byte big-endian value.
-int generate_matrix(int rows, int cols, const uint8_t *seed, uint64_t nonce_counter, float *matrix) {
-    size_t num_bytes = rows * cols;
-    uint8_t *rand_bytes = malloc(num_bytes);
-    if (!rand_bytes) {
-        return -1;
-    }
-    // Create an 8-byte nonce.
+int generate_sparse_matrix(int rows, int cols, const uint8_t *seed, uint64_t nonce_counter, float *matrix) {
+    // Need 2 bytes per position, 127 positions per row
+    const int bytes_per_row = 127 * 2;
+    size_t total_bytes = rows * bytes_per_row;
+    
+    // Allocate memory for random bytes
+    uint8_t *random_bytes = malloc(total_bytes);
+    if (!random_bytes) return -1;
+    
+    // Create nonce for ChaCha20
     uint8_t nonce[crypto_stream_chacha20_NONCEBYTES];
     for (int i = 0; i < crypto_stream_chacha20_NONCEBYTES; i++) {
         nonce[i] = (uint8_t)(nonce_counter >> (8 * (crypto_stream_chacha20_NONCEBYTES - 1 - i)));
     }
-    // Generate pseudorandom bytes (encrypting a zero buffer).
-    memset(rand_bytes, 0, num_bytes);
-    crypto_stream_chacha20_xor_ic(rand_bytes, rand_bytes, num_bytes, nonce, 0, seed);
     
-    // Map each byte modulo 3 to an element in {-1, 0, 1}.
-    for (size_t i = 0; i < num_bytes; i++) {
-        uint8_t mod = rand_bytes[i] % 3;
-        if (mod == 0)
-            matrix[i] = -1.0f;
-        else if (mod == 1)
-            matrix[i] = 0.0f;
-        else
-            matrix[i] = 1.0f;
+    // Generate random bytes
+    memset(random_bytes, 0, total_bytes);
+    crypto_stream_chacha20_xor_ic(random_bytes, random_bytes, total_bytes, nonce, 0, seed);
+    
+    // Initialize matrix to zeros
+    memset(matrix, 0, rows * cols * sizeof(float));
+    
+    // Process each row
+    for (int row = 0; row < rows; row++) {
+        const uint8_t *row_bytes = random_bytes + row * bytes_per_row;
+        
+        // Process 127 positions per row
+        for (int i = 0; i < 127; i++) {
+            uint8_t byte1 = row_bytes[i * 2];
+            uint8_t byte2 = row_bytes[i * 2 + 1];
+            
+            // MSB of byte1 determines value
+            float val = (byte1 & 0x80) ? 1.0f : -1.0f;
+            
+            // Remaining 15 bits determine position
+            int pos = ((byte1 & 0x7F) << 8 | byte2) % cols;
+            
+            matrix[row * cols + pos] = val;
+        }
     }
     
-    free(rand_bytes);
+    free(random_bytes);
     return 0;
 }
 
@@ -186,7 +197,7 @@ int main(int argc, char *argv[]) {
         free(layers);
         return 1;
     }
-    if (generate_matrix(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter, temp_matrix) != 0) {
+    if (generate_sparse_matrix(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter, temp_matrix) != 0) {
         fprintf(stderr, "Error generating expansion matrix\n");
         free(x);
         free(layers);
@@ -214,7 +225,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Memory allocation error\n");
             return 1;
         }
-        if (generate_matrix(HIDDEN_SIZE, HIDDEN_SIZE, seed, nonce_counter, layers[l].matrix) != 0) {
+        if (generate_sparse_matrix(HIDDEN_SIZE, HIDDEN_SIZE, seed, nonce_counter, layers[l].matrix) != 0) {
             fprintf(stderr, "Error generating hidden matrix at layer %d\n", l);
             return 1;
         }
@@ -230,7 +241,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Memory allocation error\n");
         return 1;
     }
-    if (generate_matrix(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter, temp_matrix) != 0) {
+    if (generate_sparse_matrix(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter, temp_matrix) != 0) {
         fprintf(stderr, "Error generating compression matrix\n");
         return 1;
     }

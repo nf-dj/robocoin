@@ -9,7 +9,6 @@ INPUT_SIZE = 256      # Input vector size.
 HIDDEN_SIZE = 1024    # Hidden layer size.
 NUM_HIDDEN_LAYERS = 64
 BATCH_SIZE = 2048     # Batch size for the Core ML model.
-MAX_NONZEROS = 127    # Maximum nonzero weights allowed per row.
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -26,44 +25,40 @@ def hex_to_bytes(hex_str):
         raise ValueError("Seed must be 32 bytes (64 hex characters)")
     return b
 
-def generate_matrix_chacha(rows, cols, key, nonce_int):
+def generate_sparse_matrix(rows, cols, seed, round_num):
     """
-    Generate a constant matrix of shape (rows, cols) whose entries are chosen from {-1, 0, 1}
-    using a ChaCha20-based RNG. This simplified version uses one byte per trit.
-    Additionally, it ensures that each row has no more than MAX_NONZEROS nonzero weights.
+    Generate a sparse matrix with exactly 127 non-zeros per row.
+    For each non-zero element:
+    - Uses 2 bytes: first byte (a) and second byte (b)
+    - MSB of first byte determines value (-1 or 1)
+    - Remaining 15 bits determine position mod cols
     """
-    # Create an 8-byte nonce from the given integer.
-    nonce = nonce_int.to_bytes(8, byteorder='big')
-    cipher = ChaCha20.new(key=key, nonce=nonce)
+    nonce = round_num.to_bytes(8, byteorder='big')
+    cipher = ChaCha20.new(key=seed, nonce=nonce)
     
-    needed = rows * cols
-    # Generate exactly the number of bytes needed.
-    random_bytes = cipher.encrypt(b'\x00' * needed)
-    data = np.frombuffer(random_bytes, dtype=np.uint8)
+    # Need 2 bytes per position, 127 positions per row
+    bytes_per_row = 127 * 2
+    random_bytes = cipher.encrypt(b'\x00' * (rows * bytes_per_row))
     
-    # Map each byte to a value in {-1, 0, 1} by taking modulo 3.
-    mods = data % 3
-    mapping = np.empty_like(mods, dtype=np.int8)
-    mapping[mods == 0] = -1
-    mapping[mods == 1] = 0
-    mapping[mods == 2] = 1
+    matrix = np.zeros((rows, cols), dtype=np.float32)
     
-    # Reshape the flat array into the desired matrix shape and convert to float32.
-    mat = mapping.reshape((rows, cols)).astype(np.float32)
-    
-    # Enforce that each row has no more than MAX_NONZEROS nonzero weights.
-    # We derive a base seed from the key and nonce_int so that the dropping is deterministic.
-    base_seed = int.from_bytes(key, byteorder='big') + nonce_int
-    for i in range(rows):
-        nonzero_indices = np.flatnonzero(mat[i])
-        if nonzero_indices.size > MAX_NONZEROS:
-            # Number of entries to drop in this row.
-            drop_count = nonzero_indices.size - MAX_NONZEROS
-            # Create a per-row RNG that is deterministic.
-            rng = np.random.RandomState(base_seed + i)
-            drop_indices = rng.choice(nonzero_indices, size=drop_count, replace=False)
-            mat[i, drop_indices] = 0
-    return mat
+    for row in range(rows):
+        # Get bytes for this row
+        row_start = row * bytes_per_row
+        for i in range(127):
+            # Get 2 bytes for this position
+            byte1 = random_bytes[row_start + i*2]
+            byte2 = random_bytes[row_start + i*2 + 1]
+            
+            # MSB of byte1 determines value
+            val = 1 if (byte1 & 0x80) else -1
+            
+            # Remaining 15 bits determine position
+            pos = ((byte1 & 0x7F) << 8 | byte2) % cols
+            
+            matrix[row, pos] = val
+            
+    return matrix
 
 def main():
     args = parse_args()
@@ -75,20 +70,20 @@ def main():
     
     # Expansion layer: generate a matrix of shape (HIDDEN_SIZE, INPUT_SIZE)
     # then transpose it to effectively have a constant of shape (INPUT_SIZE, HIDDEN_SIZE).
-    mat1 = generate_matrix_chacha(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter)
+    mat1 = generate_sparse_matrix(HIDDEN_SIZE, INPUT_SIZE, seed, nonce_counter)
     nonce_counter += 1
     expansion_mat = np.transpose(mat1)  # Now shape is (INPUT_SIZE, HIDDEN_SIZE)
     layers.append(('expansion', expansion_mat))
     
     # Hidden layers: each is a (HIDDEN_SIZE, HIDDEN_SIZE) matrix.
     for i in range(NUM_HIDDEN_LAYERS):
-        mat_hidden = generate_matrix_chacha(HIDDEN_SIZE, HIDDEN_SIZE, seed, nonce_counter)
+        mat_hidden = generate_sparse_matrix(HIDDEN_SIZE, HIDDEN_SIZE, seed, nonce_counter)
         nonce_counter += 1
         layers.append(('hidden', mat_hidden))
     
     # Compression layer: generate a matrix of shape (INPUT_SIZE, HIDDEN_SIZE)
     # then transpose it to get a constant of shape (HIDDEN_SIZE, INPUT_SIZE).
-    mat_final = generate_matrix_chacha(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter)
+    mat_final = generate_sparse_matrix(INPUT_SIZE, HIDDEN_SIZE, seed, nonce_counter)
     nonce_counter += 1
     compression_mat = np.transpose(mat_final)  # Now shape is (HIDDEN_SIZE, INPUT_SIZE)
     layers.append(('compression', compression_mat))
@@ -131,4 +126,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
