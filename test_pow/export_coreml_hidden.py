@@ -103,8 +103,9 @@ def main():
             temp = mb.mul(x=x, y=2.0)
             x_mapped = mb.sub(x=temp, y=1.0)
             dot = mb.matmul(x=x_mapped, y=mb.const(val=mat))
-            dot_bias = mb.add(x=dot, y=mb.const(val=bias))
-            x = mb.clip(x=dot_bias, alpha=0.0, beta=1.0)
+            #dot_bias = mb.add(x=dot, y=mb.const(val=bias))
+            #x = mb.clip(x=dot_bias, alpha=0.0, beta=1.0)
+            x = mb.clip(x=dot, alpha=0.0, beta=1.0)
         return x
     
     # Convert the MIL program to a Core ML ML program (using FP16 precision).
