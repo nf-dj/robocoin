@@ -15,8 +15,7 @@ typedef struct {
     int output_dim;
     // Matrix stored in row-major order, dimensions: (input_dim x output_dim)
     float *matrix;
-    // Bias vector of length output_dim.
-    float *bias;
+    // Bias removed.
 } Layer;
 
 /* --- Utility Functions --- */
@@ -89,30 +88,17 @@ void transpose_matrix(const float *in, float *out, int rows, int cols) {
     }
 }
 
-// Compute bias for a given constant matrix.
-// For each column j of a matrix with dimensions (rows x cols),
-// bias[j] = - (sum over i of matrix[i][j]) / rows.
-void compute_bias(const float *matrix, float *bias, int rows, int cols) {
-    for (int j = 0; j < cols; j++) {
-        float sum = 0.0f;
-        for (int i = 0; i < rows; i++) {
-            sum += matrix[i * cols + j];
-        }
-        bias[j] = - sum / rows;
-    }
-}
-
 /* --- Forward Propagation --- */
 
-// Improved layer_forward: avoids extra allocation by fusing the remapping (2*x-1)
-// with the matrix multiplication. The matrix is assumed to be stored row-major.
+// Perform forward propagation for one layer.
+// Instead of adding a bias, we initialize the output with zeros.
 void layer_forward(const Layer *layer, const float *input, float *output) {
     int in_dim = layer->input_dim;
     int out_dim = layer->output_dim;
 
-    // Initialize output with the bias.
+    // Initialize output with 0.0 (bias removed).
     for (int j = 0; j < out_dim; j++) {
-        output[j] = layer->bias[j];
+        output[j] = 0.0f;
     }
     
     // For each input element, compute its mapped value (2*x - 1)
@@ -218,16 +204,6 @@ int main(int argc, char *argv[]) {
     }
     transpose_matrix(temp_matrix, layers[0].matrix, HIDDEN_SIZE, INPUT_SIZE);
     free(temp_matrix);
-    layers[0].bias = malloc(HIDDEN_SIZE * sizeof(float));
-    if (!layers[0].bias) {
-        fprintf(stderr, "Memory allocation error\n");
-        free(x);
-        free(layers[0].matrix);
-        free(layers);
-        return 1;
-    }
-    // For the expansion layer, matrix shape is (INPUT_SIZE x HIDDEN_SIZE).
-    compute_bias(layers[0].matrix, layers[0].bias, INPUT_SIZE, HIDDEN_SIZE);
     
     // --- Hidden layers ---
     for (int l = 1; l <= NUM_HIDDEN_LAYERS; l++) {
@@ -243,12 +219,6 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         nonce_counter++;
-        layers[l].bias = malloc(HIDDEN_SIZE * sizeof(float));
-        if (!layers[l].bias) {
-            fprintf(stderr, "Memory allocation error\n");
-            return 1;
-        }
-        compute_bias(layers[l].matrix, layers[l].bias, HIDDEN_SIZE, HIDDEN_SIZE);
     }
     
     // --- Compression layer ---
@@ -272,16 +242,10 @@ int main(int argc, char *argv[]) {
     }
     transpose_matrix(temp_matrix, layers[comp_index].matrix, INPUT_SIZE, HIDDEN_SIZE);
     free(temp_matrix);
-    layers[comp_index].bias = malloc(INPUT_SIZE * sizeof(float));
-    if (!layers[comp_index].bias) {
-        fprintf(stderr, "Memory allocation error\n");
-        return 1;
-    }
-    compute_bias(layers[comp_index].matrix, layers[comp_index].bias, HIDDEN_SIZE, INPUT_SIZE);
     
     /* --- Forward Propagation Without Loop Allocations --- */
-    // Instead of allocating new memory each iteration, we pre-allocate two buffers of size HIDDEN_SIZE.
-    int max_dim = HIDDEN_SIZE; // maximum dimension among all layers.
+    // Pre-allocate two buffers. The maximum dimension among all layers is HIDDEN_SIZE.
+    int max_dim = HIDDEN_SIZE;
     float *buf1 = malloc(max_dim * sizeof(float));
     float *buf2 = malloc(max_dim * sizeof(float));
     if (!buf1 || !buf2) {
@@ -295,21 +259,19 @@ int main(int argc, char *argv[]) {
     // Set up pointers for swapping.
     float *current = buf1;
     float *next = buf2;
-    int current_dim = INPUT_SIZE;
     
     for (int l = 0; l < num_layers; l++) {
         int out_dim = layers[l].output_dim;
         layer_forward(&layers[l], current, next);
-        // Swap the pointers so that "next" becomes "current" for the next iteration.
+        // Swap pointers so that "next" becomes "current" for the next iteration.
         float *temp = current;
         current = next;
         next = temp;
-        current_dim = out_dim;
     }
     // After the loop, "current" holds the final output vector.
     
     // Threshold at 0.5 to obtain a binary vector.
-    int bits[INPUT_SIZE];  // Final output is of dimension INPUT_SIZE (256).
+    int bits[INPUT_SIZE];  // Final output dimension is INPUT_SIZE (256).
     for (int i = 0; i < INPUT_SIZE; i++) {
         bits[i] = (current[i] > 0.5f) ? 1 : 0;
     }
@@ -327,10 +289,8 @@ int main(int argc, char *argv[]) {
     free(buf2);
     for (int l = 0; l < num_layers; l++) {
         free(layers[l].matrix);
-        free(layers[l].bias);
     }
     free(layers);
     
     return 0;
 }
-
