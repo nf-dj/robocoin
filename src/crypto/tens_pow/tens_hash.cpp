@@ -14,8 +14,17 @@
 // INPUT_BITS is the number of bits in the input vector.
 #define INPUT_BITS (TENS_IN_SIZE * 8) // 256 bits
 
-// Helper: Generate a dense matrix of shape (rows x cols) with entries in {-1, 0, 1}
-// using a ChaCha20–based keystream. (The mapping is: byte % 4 → {0,0,+1,–1}).
+static uint64_t to_big_endian(uint64_t val) {
+    return ((val & 0x00000000000000FFULL) << 56) |
+           ((val & 0x000000000000FF00ULL) << 40) |
+           ((val & 0x0000000000FF0000ULL) << 24) |
+           ((val & 0x00000000FF000000ULL) << 8)  |
+           ((val & 0x000000FF00000000ULL) >> 8)  |
+           ((val & 0x0000FF0000000000ULL) >> 24) |
+           ((val & 0x00FF000000000000ULL) >> 40) |
+           ((val & 0xFF00000000000000ULL) >> 56);
+}
+
 static void generate_dense_matrix(int rows, int cols, const uint8_t* seed, uint64_t nonce_counter, int8_t* matrix)
 {
     int total = rows * cols;
@@ -24,11 +33,16 @@ static void generate_dense_matrix(int rows, int cols, const uint8_t* seed, uint6
     std::memcpy(key_bytes.data(), seed, 32);
     Span<const std::byte> key_span(key_bytes);
 
-    // Create a nonce. (Note: Depending on your ChaCha20 library, you may need to
-    // adjust nonce size/format. Here we assume a 96‐bit nonce is acceptable.)
-    ChaCha20::Nonce96 nonce{}; // Default–zero nonce
+    // Build a 96-bit nonce as required by Bitcoin’s ChaCha20.
+    // Bitcoin’s ChaCha20::Nonce96 is defined as a std::pair<uint32_t, uint64_t>.
+    // Here, we set the first 4 bytes to zero and the last 8 bytes to nonce_counter.
+        uint64_t nonce_be = to_big_endian(nonce_counter);
+        ChaCha20::Nonce96 nonce = std::make_pair(0u, nonce_be);
+
+
+    // Create ChaCha20 instance and seek using block counter 0.
     ChaCha20 chacha(key_span);
-    chacha.Seek(nonce, nonce_counter);
+    chacha.Seek(nonce, 0);
     Span<std::byte> keystream_span(keystream);
     chacha.Keystream(keystream_span);
 
@@ -46,23 +60,35 @@ static void generate_dense_matrix(int rows, int cols, const uint8_t* seed, uint6
     }
 }
 
+static void print_matrix(const int8_t* matrix, int num_to_print)
+{
+    printf("First %d elements of matrix: ", num_to_print);
+    for (int i = 0; i < num_to_print; i++) {
+         printf("%d ", matrix[i]);
+    }
+    printf("\n");
+}
+
 // Generate all matrices (expansion, hidden layers, and compression) using the seed.
 static void generate_all_matrices(TensHashContext* ctx, const uint8_t seed[32])
 {
     if (!ctx || !seed) return;
     uint64_t nonce_counter = 0;
-    
+
     // Expansion matrix: dimensions: TENS_HIDDEN x INPUT_BITS (1024 x 256)
     generate_dense_matrix(TENS_HIDDEN, INPUT_BITS, seed, nonce_counter++, ctx->expansion_mat);
-    
+    //print_matrix(ctx->expansion_mat, 16);
+
     // Hidden matrices: NUM_HIDDEN_LAYERS matrices, each of size TENS_HIDDEN x TENS_HIDDEN (1024 x 1024)
     for (int r = 0; r < NUM_HIDDEN_LAYERS; r++) {
         generate_dense_matrix(TENS_HIDDEN, TENS_HIDDEN, seed, nonce_counter++,
                               ctx->hidden_mats + r * TENS_HIDDEN * TENS_HIDDEN);
+        //print_matrix(ctx->hidden_mats + r * TENS_HIDDEN * TENS_HIDDEN, 16);
     }
-    
+
     // Compression matrix: dimensions: INPUT_BITS x TENS_HIDDEN (256 x 1024)
     generate_dense_matrix(INPUT_BITS, TENS_HIDDEN, seed, nonce_counter++, ctx->compression_mat);
+    //print_matrix(ctx->compression_mat, 16);
 }
 
 // Forward propagate one layer. For the given matrix (of dimensions out_dim x in_dim)
@@ -119,7 +145,7 @@ static bool alloc_context_buffers(TensHashContext* ctx)
     // Allocate state buffers (we use TENS_HIDDEN as the working size)
     ctx->state = (int8_t*)calloc(TENS_HIDDEN, sizeof(int8_t));
     ctx->next_state = (int8_t*)calloc(TENS_HIDDEN, sizeof(int8_t));
-    
+
     if (!ctx->expansion_mat || !ctx->hidden_mats || !ctx->compression_mat || !ctx->state || !ctx->next_state) {
         return false;
     }
@@ -136,9 +162,24 @@ TensHashContext* tens_hash_init(const uint8_t seed[32])
         tens_hash_free(ctx);
         return nullptr;
     }
-    generate_all_matrices(ctx, seed);
+
+    // Swap the seed bytes from LSB-first to MSB-first.
+    uint8_t swapped_seed[32];
+    for (int i = 0; i < 32; i++) {
+        swapped_seed[i] = seed[31 - i];
+    }
+
+    printf("tens_hash_init Seed (hex): ");
+    for (int i = 0; i < TENS_IN_SIZE; i++) {
+        printf("%02X", swapped_seed[i]);
+    }
+    printf("\n");
+
+    // Use the swapped seed for generating matrices.
+    generate_all_matrices(ctx, swapped_seed);
     return ctx;
 }
+
 
 void tens_hash_free(TensHashContext* ctx)
 {
@@ -161,22 +202,35 @@ void tens_hash_free(TensHashContext* ctx)
 void tens_hash_precomputed(const uint8_t input[TENS_IN_SIZE], TensHashContext* ctx, uint8_t output[TENS_IN_SIZE])
 {
     if (!input || !ctx || !output) return;
-    
-    // Convert input bytes to 256 bits.
+
+    // Swap input: reverse the order (LSB-first -> MSB-first).
+    uint8_t input_swapped[TENS_IN_SIZE];
+    for (int i = 0; i < TENS_IN_SIZE; i++) {
+        input_swapped[i] = input[TENS_IN_SIZE - 1 - i];
+    }
+
+    // Print the swapped input in hexadecimal.
+    printf("tens_hash_precomputed Input: ");
+    for (int i = 0; i < TENS_IN_SIZE; i++) {
+        printf("%02X", input_swapped[i]);
+    }
+    printf("\n");
+
+    // Convert the swapped input bytes to 256 bits.
+    // For each byte, extract bits in big–endian order (bit 7 first).
     memset(ctx->state, 0, TENS_HIDDEN); // clear working state
     for (int i = 0; i < TENS_IN_SIZE; i++) {
         for (int j = 0; j < 8; j++) {
-            // Using little–endian bit extraction (as in the C program)
-            ctx->state[i * 8 + j] = (input[i] >> j) & 1;
+            ctx->state[i * 8 + j] = (input_swapped[i] >> (7 - j)) & 1;
         }
     }
-    
+
     // --- Expansion layer: from INPUT_BITS (256) to TENS_HIDDEN (1024) ---
     layer_forward(ctx->expansion_mat, INPUT_BITS, TENS_HIDDEN, ctx->state, ctx->next_state);
     int8_t* temp = ctx->state;
     ctx->state = ctx->next_state;
     ctx->next_state = temp;
-    
+
     // --- Hidden layers: NUM_HIDDEN_LAYERS rounds, each 1024→1024 ---
     for (int r = 0; r < NUM_HIDDEN_LAYERS; r++) {
         int8_t* matrix = ctx->hidden_mats + r * TENS_HIDDEN * TENS_HIDDEN;
@@ -185,21 +239,34 @@ void tens_hash_precomputed(const uint8_t input[TENS_IN_SIZE], TensHashContext* c
         ctx->state = ctx->next_state;
         ctx->next_state = temp;
     }
-    
+
     // --- Compression layer: from TENS_HIDDEN (1024) to INPUT_BITS (256) ---
     layer_forward(ctx->compression_mat, TENS_HIDDEN, INPUT_BITS, ctx->state, ctx->next_state);
-    
+
     // The final 256–element vector is in ctx->next_state.
     int8_t final_state[INPUT_BITS];
     memcpy(final_state, ctx->next_state, INPUT_BITS * sizeof(int8_t));
-    
+
     // Pack the 256 bits into 32 bytes.
     pack_bits(final_state, output);
+
+    uint8_t output_swapped[TENS_IN_SIZE];
+    for (int i = 0; i < TENS_IN_SIZE; i++) {
+        output_swapped[i] = output[TENS_IN_SIZE - 1 - i];
+    }
+    memcpy(output, output_swapped, TENS_IN_SIZE);
+
+    printf("tens_hash_precomputed Output: ");
+    for (int i = 0; i < TENS_IN_SIZE; i++) {
+        printf("%02X", output[TENS_IN_SIZE-1-i]);
+    }
+    printf("\n");
 }
 
 void tens_hash(const uint8_t input[TENS_IN_SIZE], const uint8_t seed[32], uint8_t output[TENS_IN_SIZE])
 {
     if (!input || !seed || !output) return;
+
     TensHashContext* ctx = tens_hash_init(seed);
     if (!ctx) return;
     tens_hash_precomputed(input, ctx, output);

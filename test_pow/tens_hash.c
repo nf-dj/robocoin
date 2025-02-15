@@ -176,6 +176,15 @@ void layer_forward(const Layer *layer, const int8_t *input, int8_t *output) {
     free(x_mapped);
 }
 
+static void print_matrix(const int8_t* matrix, int num_to_print)
+{
+    printf("First %d elements of matrix: ", num_to_print);
+    for (int i = 0; i < num_to_print; i++) {
+         printf("%d ", matrix[i]);
+    }
+    printf("\n");
+}
+
 /* --- Main Program --- */
 
 int main(int argc, char *argv[]) {
@@ -249,6 +258,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     nonce_counter++;
+
+    print_matrix(layers[0].matrix, 16);
     
     // --- Hidden layers ---
     for (int l = 1; l <= NUM_HIDDEN_LAYERS; l++) {
@@ -264,6 +275,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         nonce_counter++;
+        print_matrix(layers[l].matrix, 16);
     }
     
     // --- Compression layer ---
@@ -280,6 +292,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     nonce_counter++;
+    print_matrix(layers[comp_index].matrix, 16);
     
     /* --- Forward Propagation --- */
     // Pre-allocate two buffers. The maximum dimension among all layers is HIDDEN_SIZE.
