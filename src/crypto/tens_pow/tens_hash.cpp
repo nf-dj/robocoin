@@ -112,12 +112,7 @@ static void layer_forward(const int8_t* matrix, int in_dim, int out_dim, const i
         for (int i = 0; i < in_dim; i++) {
             sum += row[i] * x_mapped[i];
         }
-        if (sum < 0)
-            output[j] = 0;
-        else if (sum > 1)
-            output[j] = 1;
-        else
-            output[j] = (int8_t)sum;
+        output[j] = sum > 0 ? 1 : 0;
     }
     free(x_mapped);
 }
