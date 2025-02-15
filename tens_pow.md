@@ -46,7 +46,7 @@ A · x ≤ target
 ## Implementation
 
 The full implementation of the TensHash Proof-of-Work can be found in the repository file:
-[src/crypto/tens_pow/tens_pow.cpp](src/crypto/tens_pow/tens_pow.cpp)
+[src/crypto/tens_pow/tens_hash.cpp](src/crypto/tens_pow/tens_hash.cpp)
 
 ## Summary
 
