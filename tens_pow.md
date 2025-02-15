@@ -1,107 +1,59 @@
-# Tensor-based Proof of Work Design
+# TensHash Proof-of-Work Overview
 
-This document describes a proof of work mechanism based on the Learning with Errors (LWE) problem, implemented using tensor operations.
+The core idea behind TensHash is to generate random ternary matrices and then process an input vector through multiple rounds of transformations to meet a target value.
 
-## Hash Function Structure
+---
 
-The core hash function processes 32-byte inputs through a series of tensor operations:
+## Key Concepts
 
-```
-input (32 bytes) → expand (256-d) → 64 rounds → compress (32 bytes)
-each round: state = (matrix × state + error) mod 256
-```
+- **Random Ternary Matrices:**  
+  Each layer uses a matrix **A** with entries in **{-1, 0, 1}**. These matrices are generated pseudo-randomly (using ChaCha20) from a seed.
 
-Parameters:
-- Input/Output: 32 bytes
-- Hidden dimension: 256
-- Rounds: 64 
-- Arithmetic: Modulo 2
-- Matrix precision: 1.58-bit integers (ternary weights)
+- **Input Transformation:**  
+  The input is a 256-bit (32-byte) binary vector. Before each matrix multiplication, it is shifted from **{0, 1}** to **{-1, +1}** via the mapping:
+  \[
+  x_{\text{mapped}} = 2x - 1.
+  \]
 
-### Implementation Phases
+- **Layered Processing:**  
+  The algorithm consists of three stages:
+  
+  1. **Expansion:**  
+     Converts the 256-bit input into a hidden state of 1024 bits using a 1024×256 matrix.
+  
+  2. **Hidden Layers:**  
+     A series of 64 rounds. In each round:
+     - The binary state (after being shifted) is multiplied by a 1024×1024 ternary matrix.
+     - A ReLU-like activation is applied (clamping the result to {0, 1}) to produce a new binary vector.
+  
+  3. **Compression:**  
+     The 1024-bit state is reduced back to 256 bits using a 256×1024 matrix.
 
-1. Expansion Phase (32 → 256):
-   ```c
-   matrix_multiply(expand_mat, input, state, expand_noise, 
-                  HIDDEN, IN_SIZE);
-   ```
+- **Proof-of-Work Goal:**  
+  The final 256-bit output is compared to a target value. The goal is to find an input (or nonce) such that, after all these rounds, the output meets the target.
 
-2. Middle Rounds (256 → 256):
-   ```c
-   for (uint32_t round = 0; round < ROUNDS; round++) {
-       matrix_multiply(middle_mats[round], state, next_state, 
-                      middle_noise + (round * HIDDEN),
-                      HIDDEN, HIDDEN, impl_type);
-   }
-   ```
+- **Security Basis – ILP Hardness:**  
+  The security of TensHash relies on the computational hardness of an underlying integer linear programming (ILP) problem. Finding a solution \( x \in \{-1, +1\}^n \) such that
+  \[
+  A \cdot x \leq \text{target}
+  \]
+  (with the activation non-linearity applied after each matrix multiplication) is NP-hard. This NP-hardness, as discussed in [Garey & Johnson, 1979](https://doi.org/10.1137/0207010), ensures that no known efficient algorithm exists for quickly solving the problem.
 
-3. Compression Phase (256 → 32):
-   ```c
-   matrix_multiply(compress_mat, state, output, compress_noise, 
-                  IN_SIZE, HIDDEN, impl_type);
-   ```
+---
 
-### Error Vector Generation
+## Implementation
 
-Error vectors are derived deterministically from the input:
-```c
-crypto_hash_sha256(digest, input, IN_SIZE);
-for (int i = 0; i < total_noise; i++) {
-    noise[i] = digest[i % crypto_hash_sha256_BYTES];
-}
-```
+The full implementation of the TensHash Proof-of-Work can be found in the repository file:  
+[src/crypto/tens_pow/tens_pow.cpp](src/crypto/tens_pow/tens_pow.cpp)
 
-## Hardware Implementation
+---
 
-The algorithm maps to standard tensor operations:
-- Matrix multiplication
-- 1.58-bit integer arithmetic
-- Dense linear algebra
-- Regular memory access patterns
+## Summary
 
-Two reference implementations:
-1. `int8`: 8-bit integer matrix multiply
-2. `fp32`: 32-bit floating point operations
-2. `fp16`: 16-bit floating point operations
+- **Random Matrices:** Generated with entries in **{-1, 0, 1}**.
+- **Input Shifting:** Binary input is mapped to **{-1, +1}** before each multiplication.
+- **Multi-Round Transformation:** The network uses an expansion layer, 64 hidden rounds with activation, and a compression layer.
+- **PoW Condition:** The resulting 256-bit output must be less than or equal to a given target.
+- **Security:** Underpinned by the NP-hardness of the associated ILP problem.
 
-## ONNX Implementation
-
-Neural network format implementations:
-- `tens_hash_int8.onnx`: INT8 version 
-- `tens_hash_fp16.onnx`: FP16 version
-- `tens_hash_fp32.onnx`: FP32 version
-
-The computation graph structure for 4 rounds can be visualized as follows (the full implementation chains 64 such rounds):
-
-![ONNX Computation Graph](test_pow/images/tens_hash_fp16.onnx.svg)
-
-Key aspects of the graph:
-1. Input layer: 1×32 dimensions
-2. Error vectors: Added at each stage
-3. Matrix operations: Gemm nodes
-4. Modulo: Applied after each transform
-5. Output: Back to 1×32 dimensions
-
-## Research Directions
-
-Open questions:
-1. Parameter optimization
-   - Hidden dimension size
-   - Number of rounds
-   - Error distribution
-
-2. Security analysis
-   - LWE hardness bounds
-   - Memory hardness proofs
-   - Attack surface evaluation
-
-3. Implementation optimization
-   - Matrix storage formats
-   - Error vector generation
-   - Hardware-specific tuning
-
-## References
-
-[1] Regev, O. "On Lattices, Learning with Errors, Random Linear Codes, and Cryptography." Journal of the ACM 56, no. 6 (2009).
-
-[2] Lyubashevsky, V., Peikert, C., Regev, O. "On Ideal Lattices and Learning with Errors Over Rings." EUROCRYPT 2010.
+This summary explains the essential operation and security rationale behind the TensHash-based PoW.
