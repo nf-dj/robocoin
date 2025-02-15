@@ -6,7 +6,7 @@ TensCoin is a Bitcoin fork that reimagines cryptocurrency mining for the AI era.
 
 ## Why TensCoin?
 
-The current state of cryptocurrency mining faces several critical problems:
+The current state of cryptocurrency mining faces several problems:
 
 1. **Mining Centralization**: Bitcoin mining has become highly centralized due to specialized ASIC requirements, limited manufacturers, and high capital costs. This concentration of mining power undermines the decentralization goals of cryptocurrency.
 
