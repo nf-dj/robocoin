@@ -1,6 +1,7 @@
 # TensHash Proof-of-Work Overview
 
-The core idea behind TensHash is to generate random ternary matrices and then process an input vector through multiple rounds of transformations to meet a target value.
+The core idea behind TensHash is to generate random ternary matrices and then process
+an input vector through multiple rounds of transformations to meet a target value.
 
 ---
 
@@ -57,3 +58,4 @@ The full implementation of the TensHash Proof-of-Work can be found in the reposi
 - **Security:** Underpinned by the NP-hardness of the associated ILP problem.
 
 This summary explains the essential operation and security rationale behind the TensHash-based PoW.
+
