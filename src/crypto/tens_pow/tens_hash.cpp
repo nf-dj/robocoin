@@ -36,9 +36,8 @@ static void generate_dense_matrix(int rows, int cols, const uint8_t* seed, uint6
     // Build a 96-bit nonce as required by Bitcoin’s ChaCha20.
     // Bitcoin’s ChaCha20::Nonce96 is defined as a std::pair<uint32_t, uint64_t>.
     // Here, we set the first 4 bytes to zero and the last 8 bytes to nonce_counter.
-        uint64_t nonce_be = to_big_endian(nonce_counter);
-        ChaCha20::Nonce96 nonce = std::make_pair(0u, nonce_be);
-
+    uint64_t nonce_be = to_big_endian(nonce_counter);
+    ChaCha20::Nonce96 nonce = std::make_pair(0u, nonce_be);
 
     // Create ChaCha20 instance and seek using block counter 0.
     ChaCha20 chacha(key_span);
@@ -91,11 +90,12 @@ static void generate_all_matrices(TensHashContext* ctx, const uint8_t seed[32])
     //print_matrix(ctx->compression_mat, 16);
 }
 
-// Forward propagate one layer. For the given matrix (of dimensions out_dim x in_dim)
-// and input vector (length in_dim), do the following:
-//  1. Compute a mapped version of the input: x_mapped[i] = 2*input[i] - 1  (i.e. 0→-1, 1→+1)
-//  2. For each output neuron, compute the dot product with the row of the matrix.
-//  3. Clip the result: if sum < 0 then output=0; if sum > 1 then output=1; else output = sum.
+// Modified forward propagation for one layer.
+//  1. Map input: x_mapped[i] = 2*input[i] - 1  (i.e., 0 → -1, 1 → +1)
+//  2. For each output neuron, compute dot product with corresponding matrix row.
+//  3. For layers where in_dim == out_dim (hidden layers), add the residual connection:
+//     add the corresponding element of x_mapped.
+//  4. Apply threshold: if sum > 0 then output = 1, else output = 0.
 static void layer_forward(const int8_t* matrix, int in_dim, int out_dim, const int8_t* input, int8_t* output)
 {
     int8_t* x_mapped = (int8_t*)malloc(in_dim * sizeof(int8_t));
@@ -112,12 +112,16 @@ static void layer_forward(const int8_t* matrix, int in_dim, int out_dim, const i
         for (int i = 0; i < in_dim; i++) {
             sum += row[i] * x_mapped[i];
         }
+        // Add residual connection if dimensions match (hidden layers: 1024→1024)
+        if (in_dim == out_dim) {
+            sum += x_mapped[j];
+        }
         output[j] = sum > 0 ? 1 : 0;
     }
     free(x_mapped);
 }
 
-// Pack 256 bits (stored in an array of int8_t where nonzero = 1) into 32 bytes.
+// Pack 256 bits (stored as int8_t with nonzero = 1) into 32 bytes.
 static void pack_bits(const int8_t* bits, uint8_t* out_bytes)
 {
     memset(out_bytes, 0, TENS_IN_SIZE);
@@ -127,7 +131,7 @@ static void pack_bits(const int8_t* bits, uint8_t* out_bytes)
     }
 }
 
-// Allocate all buffers inside the context.
+// Allocate buffers inside the context.
 static bool alloc_context_buffers(TensHashContext* ctx)
 {
     if (!ctx) return false;
@@ -137,7 +141,7 @@ static bool alloc_context_buffers(TensHashContext* ctx)
     ctx->hidden_mats = (int8_t*)malloc(NUM_HIDDEN_LAYERS * TENS_HIDDEN * TENS_HIDDEN * sizeof(int8_t));
     // Compression matrix: INPUT_BITS x TENS_HIDDEN
     ctx->compression_mat = (int8_t*)malloc(INPUT_BITS * TENS_HIDDEN * sizeof(int8_t));
-    // Allocate state buffers (we use TENS_HIDDEN as the working size)
+    // Allocate state buffers (using TENS_HIDDEN as working size)
     ctx->state = (int8_t*)calloc(TENS_HIDDEN, sizeof(int8_t));
     ctx->next_state = (int8_t*)calloc(TENS_HIDDEN, sizeof(int8_t));
 
@@ -175,7 +179,6 @@ TensHashContext* tens_hash_init(const uint8_t seed[32])
     return ctx;
 }
 
-
 void tens_hash_free(TensHashContext* ctx)
 {
     if (ctx) {
@@ -188,12 +191,12 @@ void tens_hash_free(TensHashContext* ctx)
     }
 }
 
-// Precomputed hash: using the matrices in the context, process the input as follows:
-//   1. Convert the 32–byte input into 256 bits (each bit as an int8_t).
-//   2. Apply the expansion layer (256→1024).
-//   3. Apply NUM_HIDDEN_LAYERS hidden layers (each 1024→1024).
-//   4. Apply the compression layer (1024→256).
-//   5. Pack the final 256 bits into 32 bytes.
+// Precomputed hash: process the input using the matrices in the context.
+//   1. Convert the 32-byte input into 256 bits.
+//   2. Apply expansion layer (256→1024).
+//   3. Apply NUM_HIDDEN_LAYERS hidden layers (each 1024→1024) with residual connections.
+//   4. Apply compression layer (1024→256).
+//   5. Pack final 256 bits into 32 bytes.
 void tens_hash_precomputed(const uint8_t input[TENS_IN_SIZE], TensHashContext* ctx, uint8_t output[TENS_IN_SIZE])
 {
     if (!input || !ctx || !output) return;
@@ -204,15 +207,13 @@ void tens_hash_precomputed(const uint8_t input[TENS_IN_SIZE], TensHashContext* c
         input_swapped[i] = input[TENS_IN_SIZE - 1 - i];
     }
 
-    // Print the swapped input in hexadecimal.
     printf("tens_hash_precomputed Input: ");
     for (int i = 0; i < TENS_IN_SIZE; i++) {
         printf("%02X", input_swapped[i]);
     }
     printf("\n");
 
-    // Convert the swapped input bytes to 256 bits.
-    // For each byte, extract bits in big–endian order (bit 7 first).
+    // Convert swapped input bytes to 256 bits.
     memset(ctx->state, 0, TENS_HIDDEN); // clear working state
     for (int i = 0; i < TENS_IN_SIZE; i++) {
         for (int j = 0; j < 8; j++) {
@@ -226,7 +227,7 @@ void tens_hash_precomputed(const uint8_t input[TENS_IN_SIZE], TensHashContext* c
     ctx->state = ctx->next_state;
     ctx->next_state = temp;
 
-    // --- Hidden layers: NUM_HIDDEN_LAYERS rounds, each 1024→1024 ---
+    // --- Hidden layers: NUM_HIDDEN_LAYERS rounds (each 1024→1024) with residual connections ---
     for (int r = 0; r < NUM_HIDDEN_LAYERS; r++) {
         int8_t* matrix = ctx->hidden_mats + r * TENS_HIDDEN * TENS_HIDDEN;
         layer_forward(matrix, TENS_HIDDEN, TENS_HIDDEN, ctx->state, ctx->next_state);
@@ -238,7 +239,7 @@ void tens_hash_precomputed(const uint8_t input[TENS_IN_SIZE], TensHashContext* c
     // --- Compression layer: from TENS_HIDDEN (1024) to INPUT_BITS (256) ---
     layer_forward(ctx->compression_mat, TENS_HIDDEN, INPUT_BITS, ctx->state, ctx->next_state);
 
-    // The final 256–element vector is in ctx->next_state.
+    // Final 256-element vector is in ctx->next_state.
     int8_t final_state[INPUT_BITS];
     memcpy(final_state, ctx->next_state, INPUT_BITS * sizeof(int8_t));
 
@@ -253,7 +254,7 @@ void tens_hash_precomputed(const uint8_t input[TENS_IN_SIZE], TensHashContext* c
 
     printf("tens_hash_precomputed Output: ");
     for (int i = 0; i < TENS_IN_SIZE; i++) {
-        printf("%02X", output[TENS_IN_SIZE-1-i]);
+        printf("%02X", output[TENS_IN_SIZE - 1 - i]);
     }
     printf("\n");
 }
