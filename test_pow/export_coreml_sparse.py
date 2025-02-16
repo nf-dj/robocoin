@@ -15,7 +15,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Export a CoreML model that uses ChaCha20-generated matrices without biases. "
                     "The model accepts a 256-bit input (with shape (256, batch_size): each column is a sample), "
-                    "expands to a higher dimension, applies several hidden transformations, and compresses "
+                    "expands to a higher dimension, applies several hidden transformations (with residual connections), and compresses "
                     "back to a 256-bit output."
     )
     parser.add_argument("seed", type=str, help="32-byte hex seed (64 hex characters)")
@@ -41,7 +41,7 @@ def generate_dense_matrix(rows, cols, key, nonce_int):
     random_bytes = cipher.encrypt(b'\x00' * needed)
     data = np.frombuffer(random_bytes, dtype=np.uint8)
     
-    # Map each byte to a value in {-1, 0, 1} by taking modulo 3.
+    # Map each byte to a value in {-1, 0, 1} by taking modulo 4.
     mods = data % 4
     # Mapping: 0 -> 0, 1 -> 0, 2 -> 1, 3 -> -1.
     mapping = np.empty_like(mods, dtype=np.int8)
@@ -65,7 +65,7 @@ def generate_sparse_matrix(rows, cols, seed, round_num):
     nonce = round_num.to_bytes(8, byteorder='big')
     cipher = ChaCha20.new(key=seed, nonce=nonce)
     
-    # Need 2 bytes per row, NUM_NONZERO  positions per row.
+    # Need 2 bytes per row, NUM_NONZERO positions per row.
     bytes_per_row = NUM_NONZERO * 2
     random_bytes = cipher.encrypt(b'\x00' * (rows * bytes_per_row))
     
@@ -87,7 +87,7 @@ def main():
     seed = hex_to_bytes(args.seed)
     
     # Each layer is stored as a tuple: (name, constant_matrix)
-    # Now we generate matrices in the orientation that works directly for A.x,
+    # We generate matrices in the orientation that works directly for A · x,
     # assuming that each sample is a column vector.
     layers = []
     nonce_counter = 0
@@ -98,7 +98,7 @@ def main():
     nonce_counter += 1
     layers.append(('expansion', expansion_mat))
     
-    # Hidden layers: each is (HIDDEN_SIZE, HIDDEN_SIZE).
+    # Hidden layers: each is (HIDDEN_SIZE, HIDDEN_SIZE) with residual connections.
     for i in range(NUM_HIDDEN_LAYERS):
         mat_hidden = generate_dense_matrix(HIDDEN_SIZE, HIDDEN_SIZE, seed, nonce_counter)
         nonce_counter += 1
@@ -115,7 +115,7 @@ def main():
         print(f"Layer {idx} ({name}) - matrix shape: {mat.shape}, matrix sum: {np.sum(mat)}")
     
     # Define the MIL program.
-    # Note: The input tensor is now defined as (INPUT_SIZE, BATCH_SIZE),
+    # Note: The input tensor is defined as (INPUT_SIZE, BATCH_SIZE),
     # so that each column is one 256-bit sample.
     input_specs = [mb.TensorSpec(shape=(INPUT_SIZE, BATCH_SIZE))]
     
@@ -125,16 +125,15 @@ def main():
         # For each layer:
         #  1. Map input from {0, 1} to {-1, +1} via (2*x - 1).
         #  2. Multiply by the constant matrix A (using A · x).
-        #  3. Clip the result to [0, 1].
+        #  3. If dimensions match (hidden layers), add the residual connection.
+        #  4. Clip the result to [0, 1].
         for idx, (name, mat) in enumerate(layers):
             temp = mb.mul(x=x, y=2.0)
             x_mapped = mb.sub(x=temp, y=1.0)
-            # A.x multiplication:
-            #  - For expansion, A has shape (HIDDEN_SIZE, INPUT_SIZE) and x_mapped is (INPUT_SIZE, BATCH_SIZE),
-            #    yielding (HIDDEN_SIZE, BATCH_SIZE).
-            #  - For hidden layers, A is (HIDDEN_SIZE, HIDDEN_SIZE).
-            #  - For compression, A is (INPUT_SIZE, HIDDEN_SIZE).
             dot = mb.matmul(x=mb.const(val=mat), y=x_mapped)
+            # Add residual connection only for hidden layers (where input/output dims match).
+            if name == "hidden":
+                dot = mb.add(x=dot, y=x_mapped)
             x = mb.clip(x=dot, alpha=0.0, beta=1.0)
         return x  # Final output shape is (INPUT_SIZE, BATCH_SIZE).
     

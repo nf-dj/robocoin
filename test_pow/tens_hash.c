@@ -133,17 +133,15 @@ int generate_sparse_matrix(int rows, int cols, const uint8_t *seed, uint64_t non
     return 0;
 }
 
-/* --- Forward Propagation --- */
+/* --- Forward Propagation with Residual Connection --- */
 
-// Compute output = A * (2*x - 1), where A is of shape (output_dim x input_dim).
-// Here, input and A use int8_t (with values 0/1 and -1/0/1 respectively),
-// but the multiplication is accumulated in int32_t.
+// Compute output = A * (2*x - 1), and if the layer's dimensions match, add the residual connection:
+// output = f( A * (2*x-1) + (2*x-1) ) where f(z) = 1 if z > 0 else 0.
 void layer_forward(const Layer *layer, const int8_t *input, int8_t *output) {
     int in_dim = layer->input_dim;
     int out_dim = layer->output_dim;
 
     // Precompute mapped input: x_mapped[i] = 2*x[i] - 1.
-    // (This converts 0 -> -1 and 1 -> 1.)
     int8_t *x_mapped = malloc(in_dim * sizeof(int8_t));
     if (!x_mapped) {
         fprintf(stderr, "Memory allocation error in layer_forward\n");
@@ -163,6 +161,10 @@ void layer_forward(const Layer *layer, const int8_t *input, int8_t *output) {
             if (row[i] != 0) {
                 num_nonzero++;
             }
+        }
+        // Add the residual connection if dimensions match.
+        if (in_dim == out_dim) {
+            sum += x_mapped[j];
         }
         if (abs(sum) > global_max_accum) {
             global_max_accum = abs(sum);
@@ -230,7 +232,7 @@ int main(int argc, char *argv[]) {
     // Set up the layers.
     // Layers:
     //   - Expansion: from INPUT_SIZE (256) to HIDDEN_SIZE (1024)
-    //   - Hidden layers: NUM_HIDDEN_LAYERS layers of (HIDDEN_SIZE x HIDDEN_SIZE)
+    //   - Hidden layers: NUM_HIDDEN_LAYERS layers of (HIDDEN_SIZE x HIDDEN_SIZE) -- residual connection added here.
     //   - Compression: from HIDDEN_SIZE (1024) to INPUT_SIZE (256)
     int num_layers = NUM_LAYERS;
     Layer *layers = malloc(num_layers * sizeof(Layer));
@@ -347,4 +349,3 @@ int main(int argc, char *argv[]) {
     
     return 0;
 }
-
