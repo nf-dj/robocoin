@@ -112,6 +112,7 @@ def mine_pow(difficulty):
                     params = rpc_msg.get("params", {})
                     print(f"Mining... Nonce: {params.get('nonce')}, "
                           f"Hashrate: {params.get('hashrate'):.2f} H/s, "
+                          f"TOPS: {params.get('tops'):.3f} TOPS, "
                           f"Best difficulty: {params.get('best_difficulty')}")
                     
                 elif rpc_msg.get("method") == "solution":
