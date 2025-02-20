@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 # Network dimensions
-INPUT_SIZE = 256      # Input vector size
+INPUT_SIZE = 256      # Input vector size 
 HIDDEN_SIZE = 1024    # Hidden layer size
 NUM_HIDDEN_LAYERS = 64
 BATCH_SIZE = 2048     # Batch size for inference
@@ -17,16 +17,9 @@ NUM_NONZERO = 128
 class HashNetwork(nn.Module):
     def __init__(self, matrices):
         super().__init__()
-        
-        # Store matrices as is (no transposing needed)
-        self.expansion = matrices[0][1]  # (HIDDEN_SIZE, INPUT_SIZE)
+        self.expansion = matrices[0][1]  # Already a tensor in FP16
         self.hidden_layers = [matrices[i+1][1] for i in range(NUM_HIDDEN_LAYERS)]
-        self.compression = matrices[-1][1]  # (INPUT_SIZE, HIDDEN_SIZE)
-        
-        # Convert to torch tensors
-        self.expansion = torch.from_numpy(self.expansion)
-        self.hidden_layers = [torch.from_numpy(mat) for mat in self.hidden_layers]
-        self.compression = torch.from_numpy(self.compression)
+        self.compression = matrices[-1][1]  # Already a tensor in FP16
 
     def to(self, device):
         self.expansion = self.expansion.to(device)
@@ -34,26 +27,18 @@ class HashNetwork(nn.Module):
         self.compression = self.compression.to(device)
         return self
 
-    def forward(self, x):  # x shape: (INPUT_SIZE, BATCH_SIZE) like CoreML
+    def forward(self, x):  # x shape: (INPUT_SIZE, BATCH_SIZE)
         # First expansion layer
-        temp = torch.mul(x, 2.0)  # Exactly like CoreML's mb.mul
-        x_mapped = temp - 1.0     # Exactly like CoreML's mb.sub
-        x = torch.matmul(self.expansion, x_mapped)  # Same order as CoreML's mb.matmul
+        x = torch.matmul(self.expansion, (2.0 * x - 1.0))  # Fused operations
         x = torch.clip(x, 0.0, 1.0)
         
         # Hidden layers with residual connections
         for layer in self.hidden_layers:
-            temp = torch.mul(x, 2.0)
-            x_mapped = temp - 1.0
-            dot = torch.matmul(layer, x_mapped)
-            dot = dot + x_mapped  # Residual connection
-            x = torch.clip(dot, 0.0, 1.0)
+            x_mapped = 2.0 * x - 1.0
+            x = torch.clip(torch.matmul(layer, x_mapped) + x_mapped, 0.0, 1.0)  # Fused operations
         
         # Compression layer
-        temp = torch.mul(x, 2.0)
-        x_mapped = temp - 1.0
-        x = torch.matmul(self.compression, x_mapped)
-        x = torch.clip(x, 0.0, 1.0)
+        x = torch.clip(torch.matmul(self.compression, (2.0 * x - 1.0)), 0.0, 1.0)  # Fused operations
         
         return x
 
@@ -80,7 +65,8 @@ def generate_dense_matrix(rows, cols, key, nonce_int):
     mapping[mods == 2] = 1
     mapping[mods == 3] = -1
     
-    return mapping.reshape((rows, cols)).astype(np.float32)
+    # Create tensor directly in FP16
+    return torch.from_numpy(mapping.reshape((rows, cols))).half()
 
 def generate_model(seed: bytes) -> HashNetwork:
     """Generate the model."""
@@ -104,6 +90,8 @@ def generate_model(seed: bytes) -> HashNetwork:
     nonce_counter += 1
     layers.append(('compression', compression_mat))
     
+    print(f"Generated layers in {layers[0][1].dtype} precision")
+    
     return HashNetwork(layers)
 
 class ProofOfWorkMiner:
@@ -112,15 +100,16 @@ class ProofOfWorkMiner:
         
         # Use MPS (Metal) if available
         if torch.backends.mps.is_available():
-            print("Using MPS (Metal) device")
+            print("Using MPS (Metal) device with half precision")
             self.device = torch.device("mps")
         elif torch.cuda.is_available():
-            print("Using CUDA device")
+            print("Using CUDA device with half precision")
             self.device = torch.device("cuda")
         else:
             print("Using CPU device")
             self.device = torch.device("cpu")
             
+        # Move model to device and convert to half precision
         self.model = model.to(self.device)
         self.model.eval()
         
@@ -132,19 +121,19 @@ class ProofOfWorkMiner:
         
         # Pre-allocate arrays for batch processing
         self.nonce_bytes = np.zeros((BATCH_SIZE, 32), dtype=np.uint8)
-        self.binary_input = torch.zeros((INPUT_SIZE, BATCH_SIZE), dtype=torch.float32, device=self.device)
+        self.binary_input = torch.zeros((INPUT_SIZE, BATCH_SIZE), 
+                                      dtype=torch.float16, 
+                                      device=self.device)
 
     def prepare_batch(self) -> None:
-        """Prepare a batch of inputs for the model."""
         # Generate sequential nonces
         nonces = np.arange(self.nonce, self.nonce + BATCH_SIZE, dtype=np.uint64)
         for i in range(8):
             self.nonce_bytes[:, 24 + i] = (nonces >> (8 * (7 - i))) & 0xFF
             
-        # Convert to binary exactly like CoreML version
-        bits = np.unpackbits(self.nonce_bytes, axis=1)
-        binary = bits.reshape(BATCH_SIZE, -1)[:, :INPUT_SIZE].T.astype(np.float32)
-        self.binary_input = torch.from_numpy(binary).to(self.device)
+        # Convert to binary
+        bits = np.unpackbits(self.nonce_bytes, axis=1)[:, :INPUT_SIZE].T.astype(np.float32)
+        self.binary_input.copy_(torch.from_numpy(bits).half())
 
     def count_leading_zeros(self, output: torch.Tensor) -> int:
         """Count leading zeros in binary output."""
@@ -173,9 +162,11 @@ class ProofOfWorkMiner:
             print(f"Leading zeros: {zeros}")
             print(f"Solution input (hex): {bytes(self.nonce_bytes[batch_index]).hex()}")
             
-            output_bits = (column.cpu().numpy() > 0.5)
+            # Ensure correct output format
+            output_bits = (column.cpu().numpy() > 0.5).astype(np.uint8)
             output_bytes = np.packbits(output_bits)
-            print(f"Model output (hex): {bytes(output_bytes).hex()}")
+            hex_output = bytes(output_bytes).hex()
+            print(f"Model output (hex): {hex_output}")
             return True
         return False
 
