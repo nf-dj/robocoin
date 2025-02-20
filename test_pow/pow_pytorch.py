@@ -7,7 +7,7 @@ from Crypto.Cipher import ChaCha20
 import torch
 import torch.nn as nn
 
-# Network dimensions (same as CoreML version)
+# Network dimensions
 INPUT_SIZE = 256      # Input vector size
 HIDDEN_SIZE = 1024    # Hidden layer size
 NUM_HIDDEN_LAYERS = 64
@@ -18,39 +18,41 @@ class HashNetwork(nn.Module):
     def __init__(self, matrices):
         super().__init__()
         
-        # Create layers from matrices
-        self.expansion = nn.Linear(INPUT_SIZE, HIDDEN_SIZE, bias=False)
-        self.expansion.weight.data = torch.from_numpy(matrices[0][1])
+        # Store matrices as is (no transposing needed)
+        self.expansion = matrices[0][1]  # (HIDDEN_SIZE, INPUT_SIZE)
+        self.hidden_layers = [matrices[i+1][1] for i in range(NUM_HIDDEN_LAYERS)]
+        self.compression = matrices[-1][1]  # (INPUT_SIZE, HIDDEN_SIZE)
         
-        self.hidden_layers = nn.ModuleList([
-            nn.Linear(HIDDEN_SIZE, HIDDEN_SIZE, bias=False) 
-            for _ in range(NUM_HIDDEN_LAYERS)
-        ])
-        for i, layer in enumerate(self.hidden_layers):
-            layer.weight.data = torch.from_numpy(matrices[i + 1][1])
-            
-        self.compression = nn.Linear(HIDDEN_SIZE, INPUT_SIZE, bias=False)
-        self.compression.weight.data = torch.from_numpy(matrices[-1][1])
+        # Convert to torch tensors
+        self.expansion = torch.from_numpy(self.expansion)
+        self.hidden_layers = [torch.from_numpy(mat) for mat in self.hidden_layers]
+        self.compression = torch.from_numpy(self.compression)
 
-    def forward(self, x):
-        # Map input from {0,1} to {-1,1}
-        x = 2.0 * x - 1.0
-        
-        # Expansion layer
-        x = self.expansion(x)
+    def to(self, device):
+        self.expansion = self.expansion.to(device)
+        self.hidden_layers = [layer.to(device) for layer in self.hidden_layers]
+        self.compression = self.compression.to(device)
+        return self
+
+    def forward(self, x):  # x shape: (INPUT_SIZE, BATCH_SIZE) like CoreML
+        # First expansion layer
+        temp = torch.mul(x, 2.0)  # Exactly like CoreML's mb.mul
+        x_mapped = temp - 1.0     # Exactly like CoreML's mb.sub
+        x = torch.matmul(self.expansion, x_mapped)  # Same order as CoreML's mb.matmul
         x = torch.clip(x, 0.0, 1.0)
         
         # Hidden layers with residual connections
         for layer in self.hidden_layers:
-            identity = x
-            x = 2.0 * x - 1.0
-            x = layer(x)
-            x = x + identity  # Residual connection
-            x = torch.clip(x, 0.0, 1.0)
+            temp = torch.mul(x, 2.0)
+            x_mapped = temp - 1.0
+            dot = torch.matmul(layer, x_mapped)
+            dot = dot + x_mapped  # Residual connection
+            x = torch.clip(dot, 0.0, 1.0)
         
         # Compression layer
-        x = 2.0 * x - 1.0
-        x = self.compression(x)
+        temp = torch.mul(x, 2.0)
+        x_mapped = temp - 1.0
+        x = torch.matmul(self.compression, x_mapped)
         x = torch.clip(x, 0.0, 1.0)
         
         return x
@@ -107,9 +109,8 @@ def generate_model(seed: bytes) -> HashNetwork:
 class ProofOfWorkMiner:
     def __init__(self, model: HashNetwork, target_difficulty: int):
         self.target_difficulty = target_difficulty
-        self.model = model
         
-        # Use MPS (Metal) if available, otherwise CUDA, otherwise CPU
+        # Use MPS (Metal) if available
         if torch.backends.mps.is_available():
             print("Using MPS (Metal) device")
             self.device = torch.device("mps")
@@ -120,8 +121,8 @@ class ProofOfWorkMiner:
             print("Using CPU device")
             self.device = torch.device("cpu")
             
-        self.model = self.model.to(self.device)
-        self.model.eval()  # Set to evaluation mode
+        self.model = model.to(self.device)
+        self.model.eval()
         
         # Initialize tracking variables
         self.nonce = 0
@@ -130,32 +131,26 @@ class ProofOfWorkMiner:
         self.best_difficulty = 0
         
         # Pre-allocate arrays for batch processing
-        self.nonce_bytes = torch.zeros((BATCH_SIZE, 32), dtype=torch.uint8)
-        self.binary_input = torch.zeros((BATCH_SIZE, INPUT_SIZE), dtype=torch.float32, device=self.device)
+        self.nonce_bytes = np.zeros((BATCH_SIZE, 32), dtype=np.uint8)
+        self.binary_input = torch.zeros((INPUT_SIZE, BATCH_SIZE), dtype=torch.float32, device=self.device)
 
     def prepare_batch(self) -> None:
         """Prepare a batch of inputs for the model."""
-        # Generate sequential nonces using numpy first
+        # Generate sequential nonces
         nonces = np.arange(self.nonce, self.nonce + BATCH_SIZE, dtype=np.uint64)
-        nonce_bytes = np.zeros((BATCH_SIZE, 32), dtype=np.uint8)
-        
-        # Convert nonces to bytes (last 8 bytes of each 32-byte input)
         for i in range(8):
-            nonce_bytes[:, 24 + i] = (nonces >> (8 * (7 - i))) & 0xFF
+            self.nonce_bytes[:, 24 + i] = (nonces >> (8 * (7 - i))) & 0xFF
             
-        # Convert to binary using numpy's unpackbits
-        bits = np.unpackbits(nonce_bytes, axis=1)[:, :INPUT_SIZE]
-        
-        # Convert to torch tensor and move to device
-        self.binary_input = torch.from_numpy(bits).float().to(self.device)
-        self.nonce_bytes = torch.from_numpy(nonce_bytes)
+        # Convert to binary exactly like CoreML version
+        bits = np.unpackbits(self.nonce_bytes, axis=1)
+        binary = bits.reshape(BATCH_SIZE, -1)[:, :INPUT_SIZE].T.astype(np.float32)
+        self.binary_input = torch.from_numpy(binary).to(self.device)
 
     def count_leading_zeros(self, output: torch.Tensor) -> int:
         """Count leading zeros in binary output."""
-        # Convert to binary (0 or 1)
-        binary = (output > 0.5).int()
-        nonzeros = binary.nonzero()
-        return nonzeros[0].item() if len(nonzeros) > 0 else INPUT_SIZE
+        binary = (output.cpu() > 0.5).numpy()
+        nonzero_indices = np.nonzero(binary)[0]
+        return nonzero_indices[0] if len(nonzero_indices) > 0 else INPUT_SIZE
 
     def print_status(self):
         """Print current mining status."""
@@ -167,7 +162,8 @@ class ProofOfWorkMiner:
 
     def check_solution(self, binary_output: torch.Tensor, batch_index: int) -> bool:
         """Check if a solution meets the target difficulty."""
-        zeros = self.count_leading_zeros(binary_output[batch_index])
+        column = binary_output[:, batch_index]
+        zeros = self.count_leading_zeros(column)
         self.best_difficulty = max(self.best_difficulty, zeros)
         
         if zeros >= self.target_difficulty:
@@ -175,17 +171,15 @@ class ProofOfWorkMiner:
             print("\nSolution found!")
             print(f"Nonce: {solution_nonce}")
             print(f"Leading zeros: {zeros}")
-            print(f"Solution input (hex): {bytes(self.nonce_bytes[batch_index].numpy()).hex()}")
+            print(f"Solution input (hex): {bytes(self.nonce_bytes[batch_index]).hex()}")
             
-            # Convert output bits to bytes
-            # Convert output bits to bytes using numpy
-            output_bits = (binary_output[batch_index].cpu().numpy() > 0.5)
+            output_bits = (column.cpu().numpy() > 0.5)
             output_bytes = np.packbits(output_bits)
             print(f"Model output (hex): {bytes(output_bytes).hex()}")
             return True
         return False
 
-    @torch.no_grad()  # Disable gradient computation for inference
+    @torch.no_grad()
     def mine(self):
         """Main mining loop."""
         print(f"Mining with difficulty: {self.target_difficulty}")
